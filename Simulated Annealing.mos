@@ -1,0 +1,303 @@
+model ModelName
+  options noimplicit
+  uses "mmxprs", "mmsystem"
+
+  forward procedure Input !input da file
+  forward procedure EuristicoPesato !Euristico greedy
+  forward procedure Selettore !seleziona il mese e la macchina a cui aggiungere produzione
+
+  declarations
+    n: integer !numero macchine
+    T: integer !numero mesi
+    inputfile = "Instances/Dati-20C.dat"
+    t1, t2: real !tempi esecuzione
+  end-declarations
+
+  initialisations from inputfile
+    n
+    T
+  end-initialisations
+
+  declarations
+    !variabili input
+    macchinari = 1..n
+    mesi = 1..T
+    forecast: array(macchinari) of integer !Forecast commerciale per il tipo i (domanda)
+    kore: array(macchinari) of integer !ore necessarie per realizzare il tipo i (tempo ciclo)
+    witmax: array(macchinari, mesi) of real !ore di lavoro disponibili nel periodo t per produrre macchine di tipo i
+    wtmax: array(mesi) of real !ore di lavoro disponibili nel periodo t
+    V: array(macchinari) of integer !cadenza media di produzione mensile per il prodotto imports
+    A: real !costante legata all’assenteismo medio
+    R: integer !risorse
+    Rn: array(macchinari) of integer !risorse per macchinario
+    Giorni: array(mesi) of integer !giorni lavorativi per mese
+
+    !tengo globali queste variabili per non ricalcolarle ogni volta
+    mese: integer !mese selezionato a cui aggiungere produzione
+    mac: integer !macchina selezionata a cui aggiungere produzione
+    padd: integer !produzione da aggiungere
+    tm: array(macchinari, mesi) of real !tempo lavorazione per macchina per mese restante
+    ttot: array(mesi) of real !tempo lavorazione per mese restante
+    mprod: array(macchinari) of integer !macchine prodotte per modello
+    xeur: array(macchinari,mesi) of integer !soluzione euristico greedy
+    zeur: integer !soluzione euristico greedy
+
+    mesiOrder: array(mesi, 1..2) of integer !matrice di due array di mesi ordinati in ordine casuale
+    maccOrder: array(macchinari, 1..2) of integer !matrice di due array di macchine ordinati in ordine casuale
+  end-declarations
+
+  forward procedure Print (nome: string, z: integer, x: array(macchinari,mesi) of integer) !stampa soluzioni euristico
+  forward procedure SimulatedAnnealing (zPartenza: integer, xPartenza: array(macchinari,mesi) of integer) !diminuisce e aumenta la produzione di due coppie macchina-mese
+
+
+  !MAIN
+  Input !lettura da file
+  EuristicoPesato !euristico greedy
+  SimulatedAnnealing(zeur, xeur) !ricerca locale di tipo swap
+
+  !END MAIN
+  procedure Input !lettura da file
+    initializations from inputfile
+      forecast
+      kore
+      V
+      A
+      R
+      Rn
+      Giorni
+    end-initializations
+    forall(i in macchinari, t in mesi) witmax(i,t) := Giorni(t) * Rn(i) * 8 !calcola ore di lavoro disponibili nel periodo t per produrre macchine di tipo i
+    forall(t in mesi) wtmax(t) := Giorni(t) * R * 8 !calcola ore di lavoro disponibili nel periodo t
+  end-procedure
+
+  procedure EuristicoPesato  !euristico greedy
+    t1:=gettime
+
+    !inizializzazione variabili di supporto
+    forall(i in macchinari, t in mesi) tm(i,t) := witmax(i,t)
+    forall(t in mesi) ttot(t) := wtmax(t)
+
+    Selettore !seleziona la posizione migliore a cui aggiungere la produzione
+    while(padd <> 0) do !finchè ho possibilità di aggiungere produzione
+      mprod(mac) += padd !incremento le macchine prodotte totali per la macchina selezionata
+      xeur(mac,mese) += padd !incremento le macchine prodotte quel mese
+      ttot(mese) -= padd*kore(mac)*(1+A) !incremento le ore lavorate quel mese
+      tm(mac,mese) -= padd*kore(mac)*(1+A) !incremento le ore lavorate quel mese a quella macchina
+      Selettore !seleziono nuovamente una posizione a cui aumentare la produzione
+    end-do
+
+    zeur := sum(i in macchinari, t in mesi) abs(xeur(i,t) - V(i)) !calcolo la z
+    t2:=gettime
+    Print("EuristicoPesato", zeur, xeur) !output
+  end-procedure
+
+  procedure Selettore
+    declarations
+      massimo, peso: real
+    end-declarations
+
+    mese := 8 !agosto è sempre il mese in cui si produce meno, sarebbe da farlo tutto a casa e calcolare la produzione in 11 mesi
+    mac := 1
+    padd :=0
+    massimo := -MAX_REAL
+
+    forall(i in macchinari | mprod(i) < forecast(i)) do !per tutti i macchinari per cui non ho ancora raggiunto il forecast
+      forall(t in mesi | ttot(t) >= kore(i)*(1+A) and tm(i,t) >= kore(i)*(1+A)) do !per tutti i mesi per cui ho ancora possibilità di incrementare la produzione
+        peso := (forecast(i) - mprod(i))*kore(i)+ttot(t)+tm(i,t) !assegno alla coppia macchina-mese un peso, dà priorità a macchine ancora lontane dal forecast ed a mesi con più tempo disponibile
+        if xeur(i,t) < V(i)  then !se per quel mese non ho ancora raggiunto la cadenza
+          peso := peso*100        !incentiva la scelta di quel mese
+        else
+          peso := peso/100        !altrimenti la penalizza
+        end-if
+
+        if peso > massimo then !se il peso mese-macchina è maggiore, seleziono la coppia
+          mese := t
+          mac := i
+          padd := 1           !se non entra mai in questo if, quindi se non c'è nessuna coppia che rispetti i vincoli, non aggiunge produzione, quindi ferma l'euristico
+          massimo := peso     !aggiorna peso massimo
+        end-if
+      end-do !fine ciclo mesi
+    end-do !fine ciclo macchine
+  end-procedure
+
+
+  procedure SimulatedAnnealing (zPartenza: integer, xPartenza: array(macchinari,mesi) of integer)
+    declarations
+      xs, xIntorno: array(macchinari, mesi) of integer !incumbent solution, soluzione trovata nel vicinato
+      zs, zIntorno: integer !valore incumbent solution, valore soluzione trovata nel vicinato
+
+      tmPartenza, tmIntorno: array(macchinari, mesi) of real !tempo lavorazione per macchina per mese restante
+      ttotPartenza, ttotIntorno: array(mesi) of real !tempo lavorazione per mese restante
+      mprodPartenza, mprodIntorno: array(macchinari) of integer !macchine prodotte per modello
+      fPartenza, fIntorno: integer !scostamento forecast 
+
+      paddi, paddj: integer !macchine da aggiungere in lavorazione
+      i, j, t, v: integer !variabili che indicano le coordinate delle due celle su cui eseguire l'operazione
+      
+      noImpr: integer !iterazioni senza miglioramenti
+      contatore: integer !contatore usato per terminare l'esecuzione dell'algoritmo qualora non si riuscisse a trovare una soluzione nell'intorno
+      pr: real !valore randomico tra 0 e 1
+      temp: real !valore di "temperatura"
+      K: integer !numero di "passi sul gradino"
+      alfa: real !parametro per il raffreddamento 
+      gradino: integer !ampiezza del gradino
+    end-declarations
+
+    !inizializzazione variabili
+      t1 := gettime
+      temp := zPartenza*0.3
+      alfa := 0.8
+      gradino := 900
+      !Assegno le variabili dell'euristico all'incumbent solution
+      xs := xPartenza
+      zs := zPartenza
+      !calcolo le variabili di supporto, utili per memorizzare informazioni della soluzione attuale
+      forall(k in macchinari, w in mesi) tmPartenza(k,w) := witmax(k,w) - xPartenza(k,w)*(1+A)*kore(k)
+      forall(w in mesi) ttotPartenza(w) := wtmax(w) - sum(k in macchinari) xPartenza(k,w)*(1+A)*kore(k)
+      forall(k in macchinari) mprodPartenza(k) := sum(w in mesi) xPartenza(k,w)
+      fPartenza := sum(k in macchinari) (forecast(k) - mprod(k)) 
+
+      
+    !esecuzione algoritmo
+    while (noImpr < 15000) do !se non ottengo miglioramenti per 150 iterazioni, interrompo l'esecuzione dell'algoritmo
+      i := ceil(random*n)
+      v := ceil(random*T)
+      j := ceil(random*n)
+      t := ceil(random*T)
+      while (i=j)  j := ceil(random*n)
+      while (t=v)  t := ceil(random*T)
+      !restituisco le coordinate di due celle presenti in righe e colonne diverse
+      
+      !assegnamento per poter tornare alla posizione precedente nel caso in cui lo spostamento sia stato svantaggioso
+      xIntorno := xPartenza
+      zIntorno := zPartenza
+      fIntorno := fPartenza
+      tmIntorno := tmPartenza
+      ttotIntorno := ttotPartenza
+      mprodIntorno := mprodPartenza
+
+      
+      !se posso diminuire da una coppia ed aumentare all'altra, rispettando i vincoli (nel file Allegato 1 spiegazione con disegno)
+      if (tmIntorno(i,v) >= kore(i)*(1+A) and tmIntorno(j,t) >= kore(j)*(1+A) and ttotIntorno(t) >= (kore(j) - kore(i))*(1+A) and ttotIntorno(v) >= (kore(i) - kore(j))*(1+A) and xIntorno(i,t) > 0 and xIntorno(j,v) > 0) then
+        contatore:= 0 !ho trovato una soluzione nell'intorno
+        
+        !rimuovo produzione della macchina di tipo i dal mese t
+        mprodIntorno(i) -= 1
+        xIntorno(i,t) -= 1
+        ttotIntorno(t) += kore(i)*(1+A)
+        tmIntorno(i,t) += kore(i)*(1+A)
+
+        !rimuovo produzione della macchina di tipo j dal mese v
+        mprodIntorno(j) -= 1
+        xIntorno(j,v) -= 1
+        ttotIntorno(v) += kore(j)*(1+A)
+        tmIntorno(j,v) += kore(j)*(1+A)
+
+        !aggiungo produzione della/e macchina/e di tipo i dal mese v
+        paddi := floor(minlist(ttotIntorno(v)/(kore(i)*(1+A)), tmIntorno(i,v)/(kore(i)*(1+A)), forecast(i)-mprodIntorno(i))) !se riesco aggiungo più di 1 macchina prodotta, rispettando i vincoli
+        mprodIntorno(i) += paddi
+        xIntorno(i,v) += paddi
+        ttotIntorno(v) -= paddi*kore(i)*(1+A)
+        tmIntorno(i,v) -= paddi*kore(i)*(1+A)
+
+        !aggiungo produzione della/e macchina/e di tipo j dal mese t
+        paddj := floor(minlist(ttotIntorno(t)/(kore(j)*(1+A)), tmIntorno(j,t)/(kore(j)*(1+A)), forecast(j)-mprodIntorno(j))) !se riesco aggiungo più di 1 macchina prodotta, rispettando i vincoli
+        mprodIntorno(j) += paddj
+        xIntorno(j,t) += paddj
+        ttotIntorno(t) -= paddj*kore(j)*(1+A)
+        tmIntorno(j,t) -= paddj*kore(j)*(1+A)
+        
+        !calcolo z e scostamento forecast
+        zIntorno := sum(k in macchinari, w in mesi) abs(xIntorno(k,w) - V(k))
+        fIntorno := sum(k in macchinari) (forecast(k) - mprodIntorno(k)) 
+        
+        if zIntorno <=  zPartenza then !dopo aver generato la soluzione xIntorno, controllo se ho migliorato la f.obiettivo rispetto alla soluzione di partenza
+          if zIntorno < zPartenza then 
+            noImpr := 0 !ho effettivamente migliorato la soluzione di partenza
+          else noImpr := noImpr + 1 !se ho trovato una soluzione di valore equivalente, allora noImpr cresce di 1
+          end-if
+          !mi sposto nella nuova soluzione trovata nell'intorno della soluzione di partenza
+          zPartenza := zIntorno !aggiorno il valore della soluzione in cui mi trovo
+          xPartenza := xIntorno !aggiorno la soluzione in cui mi trovo
+          fPartenza := fIntorno
+          tmPartenza := tmIntorno
+          ttotPartenza := ttotIntorno
+          mprodPartenza := mprodIntorno
+
+          if zIntorno < zs then !se il valore della soluzione in cui mi sono spostato è migliore del valore dell'incumbent solution, allora aggiorno l'incumbent solution
+            zs := zIntorno
+            xs := xIntorno
+          end-if
+
+        else !altrimenti mi sposto nella soluzione dell'intorno con una certa probabilità
+          pr := random !numero random tra 0 e 1
+          if fIntorno < fPartenza then 
+            pr := -MAX_REAL !se la soluzione dell'intorno ha un valore peggiore della soluzione attuale, ma consente di ridurre il gap delle forecast, allora mi sposto 
+          end-if
+          if pr <= exp( -( (zIntorno - zPartenza) / temp )  )  then !se la condizione è soddisfatta, mi sposto nonostante il peggioramento del valore
+            zPartenza := zIntorno
+            xPartenza := xIntorno
+            fPartenza := fIntorno
+            tmPartenza := tmIntorno
+            ttotPartenza := ttotIntorno
+            mprodPartenza := mprodIntorno
+            noImpr := 0
+          else
+            noImpr := noImpr + 1 !se non mi sposto dalla soluzione in cui mi trovo, noImpr cresce di 1
+          end-if
+          
+        end-if
+        
+        K := K + 1 !ho fatto un "passo" nel gradino
+        if (K = gradino ) then !quando raggiungo la fine del gradino, aggiorno il valore della temperatura
+          temp := alfa * temp
+          K:= 0
+        end-if
+
+      end-if
+      contatore+=1
+      if contatore = n*n*T*T then !se per un certo numero di iterazioni del ciclo while non si riesce a trovare una soluzione nell'intorno, allora termina l'esecuzione
+        break
+      end-if
+      
+    end-do !fine ciclo while
+
+    t2:=gettime
+    Print("Simulated Annealing", zs, xs) !output
+  end-procedure
+
+
+  procedure Print(nome: string, z: integer, x: array(macchinari,mesi) of integer)
+    writeln
+    writeln("Risultati ", nome, ":")
+    writeln("\tZ = ", z, " - ", sum(i in macchinari) (forecast(i) - sum(t in mesi) x(i,t))) !stampa la z e lo scostamento dal forecast totale
+    writeln("\tTempo di esecuzione= ", t2-t1)
+    !stampa x
+    writeln
+    writeln("X")
+    write("\t")
+    forall(t in mesi)  write("\t(",t,")")
+    writeln
+    forall(i in macchinari) do
+      write("(",i," - ", forecast(i) - sum(t in mesi) x(i,t),") ") !per ogni macchina indica anche lo scostamento dal forecast
+      forall(t in mesi) write("\t ",xeur(i,t)) !stampa matrice di soluzioni x
+      writeln
+    end-do
+    !stampa ore rimanenti
+    writeln
+    writeln("Ore")
+    write("\t")
+    forall(t in mesi)  write("\t(",t,")")
+    writeln
+    forall(i in macchinari) do
+      write("(",i," - ",kore(i),") ") !per ogni macchina indica anche il tempo di ciclo
+      forall(t in mesi) do
+        write("\t",witmax(i,t) - x(i,t)*(1+A)*kore(i)) !stampa la matrice di ore macchina rimanenti
+      end-do
+      writeln
+    end-do
+    write("\t")
+    forall(t in mesi) write("\t",wtmax(t) - sum(i in macchinari) x(i,t)*(1+A)*kore(i)) !stampa le ore macchina rimanenti per mese
+    writeln
+  end-procedure
+end-model

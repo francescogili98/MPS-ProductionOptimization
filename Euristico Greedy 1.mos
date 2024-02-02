@@ -1,0 +1,213 @@
+model ModelName
+  options noimplicit
+  uses "mmxprs", "mmsystem"
+
+  forward procedure InputDati !input dati
+  forward procedure AlgoritmoEuristico1  !primo algoritmo euristico greedy
+  forward procedure RigaSommaWitmaxMaggiore  !restituisce l'indice della riga con massima somma dei witmax2 residui(NECESSARIA PER EURISTICO)
+  forward procedure ColonnaWtmaxMaggiore  !restituisce l'indice della colonna con massimo valore di wtmax2 residuo (NECESSARIA PER EURISTICO)
+
+  declarations
+    n: integer
+    T: integer
+    inputfile = "Instances/Dati-40C.dat"
+    solution_status: string
+    eps = 0.001
+    t1, t2: real
+  end-declarations
+
+  initialisations from inputfile
+    n
+    T
+  end-initialisations
+
+  declarations
+    macchinari = 1..n ! range delle macchine utilizzabili
+    mesi = 1..T ! range dei mesi
+    forecast: array(macchinari) of integer ! Forecast commerciale per il tipo i (domanda)
+    kore: array(macchinari) of integer ! ore necessarie per realizzare il tipo i (tempo ciclo)
+    witmax: array(macchinari, mesi) of real ! ore di lavoro disponibili nel periodo t per produrre macchine di tipo i
+    wtmax: array(mesi) of real ! ore di lavoro disponibili nel periodo t
+    V: array(macchinari) of integer ! cadenza media di produzione mensile per il prodotto imports
+    A: real ! costante legata all’assenteismo medio (6%)
+    R: integer !risorse
+    Rn: array(macchinari) of integer !risorse per macchinario
+    Giorni: array(mesi) of integer !giorni lavorativi per mese
+    
+     !VARIABILI EURISTICO 1
+    xeur1: array(macchinari, mesi) of integer !soluzione euristica del primo algoritmo greedy
+    zeur1: integer !valore soluzione euristica del primo algoritmo greedy
+    feur1: integer !scarto totale dal forecast del primo algoritmo greedy
+    righeEscluse: array(macchinari) of integer !memorizza quali righe non devono essere più considerate dal primo algoritmo greedy
+    colonneEscluse: array(mesi) of integer !memorizza quali colonne non devono essere più considerate dal primo algoritmo greedy
+    rigaMax: integer !riga con somma dei Witmax2 maggiore
+    colMax: integer !colonna con Wtmax2 maggiore
+    witmax2: array(macchinari, mesi) of real ! ore di lavoro residue disponibili nel periodo t per produrre macchine di tipo i
+    wtmax2: array(mesi) of real ! ore di lavoro residue disponibili nel periodo t
+  end-declarations
+  
+  forward procedure Print(nome: string, z: integer, x: array(macchinari,mesi) of integer) !stampa soluzioni euristico
+  
+  !MAIN
+  InputDati
+  AlgoritmoEuristico1 !primo algoritmo euristico greedy
+
+  !END MAIN
+  procedure InputDati
+    initializations from inputfile
+      forecast
+      kore
+      V
+      A
+      R
+      Rn
+      Giorni
+    end-initializations
+    forall(i in macchinari, t in mesi) witmax(i,t):=Giorni(t) * Rn(i) * 8
+    forall(t in mesi) wtmax(t):= Giorni(t) * R * 8
+  end-procedure
+
+  procedure AlgoritmoEuristico1 !primo algoritmo euristico greedy
+    declarations
+      prosegui: boolean !variabile che quando assume valore false, interrompe il ciclo while principale
+      saturazione: integer !contatore che identifica la saturazione delle ore disponibili
+    end-declarations
+
+    !inizializzazione variabili
+    t1:=gettime !tempo iniziale esecuzione AlgoritmoEuristico1
+
+    forall(i in macchinari, t in mesi) xeur1(i,t) := 0 !azzeramento della soluzione iniziale
+    forall(i in macchinari) righeEscluse(i) := 0 !azzeramento array righeEscluse
+    forall(t in mesi) colonneEscluse(t) := 0 !azzeramento array colonneEscluse
+    zeur1 := 0 !azzeramento valore della soluzione iniziale
+    prosegui := true
+    wtmax2 := wtmax !creo una copia di wtmax che verrà aggiornata al procedere delle iterazioni
+    witmax2 := witmax !creo una copia di witmax che verrà aggiornata al procedere delle iterazioni
+
+    !esecuzione algoritmo
+    while(prosegui) do !questo ciclo terminerà quando ogni riga di xeur1 raggiungerà la forecast richiesta oppure esaurirà le ore disponibili per le lavorazioni
+      RigaSommaWitmaxMaggiore !restituisce l'indice della riga con massima somma dei witmax2 residui ("rigaMax")
+      saturazione := 0
+      forall(t in mesi) do
+        if( kore(rigaMax)*(1+A) <= wtmax2(t) and kore(rigaMax)*(1+A) <= witmax2(rigaMax,t) and righeEscluse(rigaMax) = 0 ) then !se riesco ad aggiungere una macchina nella cella xeur1(RigaMax,t) senza violare i vincoli, la inserisco
+            xeur1(rigaMax,t) += 1
+            wtmax2(t) := wtmax2(t) - (kore(rigaMax)*(1+A)) !dopo aver inserito la macchina, aggiorno il Wtmax2 relativo al mese t
+            witmax2(rigaMax,t) := witmax2(rigaMax,t) - (kore(rigaMax)*(1+A)) !dopo aver inserito la macchina, aggiorno il Witmax2 relativo al mese t e alla riga "rigaMax"
+            if( sum(g in mesi) xeur1(rigaMax, g) = forecast(rigaMax) ) then !se la somma delle xeur1 sulla riga "rigaMax" per g = 1..T raggiunge la forecast, allora quella riga è completa
+              righeEscluse(rigaMax) := 1 !imposto valore 1 nella cella di indice "rigaMax" dell'array "righeEscluse"
+              break
+            end-if
+        else saturazione += 1
+        end-if
+      end-do
+      if saturazione = T then !data la riga "rigaMax", se non posso inserire macchine in lavorazione in nessun mese, allora quella riga è completa
+        righeEscluse(rigaMax) := 1 !imposto valore 1 nella cella di indice "rigaMax" dell'array "righeEscluse"
+      end-if
+
+      ColonnaWtmaxMaggiore !restituisce l'indice della colonna con massimo valore di wtmax2 residuo
+      saturazione := 0
+
+      forall(i in macchinari) do !per ogni riga della colonna "colMax", controllo se posso aggiungere un macchinario in lavorazione
+        if( kore(i)*(1+A) <= wtmax2(colMax) and kore(i)*(1+A) <= witmax2(i,colMax) and righeEscluse(i) = 0 ) then
+            xeur1(i,colMax) += 1
+            wtmax2(colMax) := wtmax2(colMax) - (kore(i)*(1+A)) !dopo aver inserito la macchina, aggiorno il Wtmax2 relativo al mese "colMax"
+            witmax2(i,colMax) := witmax2(i,colMax) - (kore(i)*(1+A)) !dopo aver inserito la macchina, aggiorno il Witmax2 relativo al mese "colMax" e alla riga i
+            if( sum(g in mesi) xeur1(i, g) = forecast(i) ) then !se la somma delle xeur1 sulla riga i per g = 1..T raggiunge la forecast, allora quella riga è completa
+              righeEscluse(i) := 1 !imposto valore 1 nella cella di indice i dell'array "righeEscluse"
+            end-if
+        else
+          saturazione += 1
+        end-if
+      end-do
+      if saturazione = n then !data la colonna "colMax", se per ogni riga non posso inserire nessun tipo di macchina in lavorazione, allora quella colonna è completa
+        colonneEscluse(colMax) := 1 !imposto valore 1 nella cella di indice "colMax" dell'array "colonneEscluse"
+      end-if
+
+      if sum(i in macchinari) righeEscluse(i) = n then !se tutte le righe sono complete, allora esci dal ciclo while
+        prosegui:=false
+      end-if
+
+    end-do !fine ciclo while
+
+    !calcolo valore della soluzione
+    forall(i in macchinari, t in mesi)
+      zeur1 += abs(V(i) - xeur1(i,t)) !valore soluzione euristica
+
+    !scrittura output a schermo
+    t2:= gettime !tempo finale esecuzione AlgoritmoEuristico1
+    Print("Algoritmo euristico 1", zeur1, xeur1) !stampo la soluzione dell'AlgoritmoEuristico1 a schermo
+
+  end-procedure
+
+  procedure RigaSommaWitmaxMaggiore !restituisce l'indice della riga con massima somma dei witmax2 residui
+    declarations
+      massimo: real !variabile locale per memorizzare il massimo valore "somma witmax2"
+      kmax: integer !variabile locale per memorizzare l'indice della riga a cui corrisponde il massimo valore "somma witmax2"
+    end-declarations
+
+    !inizializzazione variabili
+    massimo := -MAX_REAL
+
+    !esecuzione algoritmo
+    forall(k in macchinari | righeEscluse(k) <> 1) do !non considero le righe che sono già state completate
+      if (sum(t in mesi) witmax2(k,t) > massimo) then
+        massimo := sum(t in mesi) witmax2(k,t)
+        kmax := k
+      end-if
+    end-do
+    rigaMax := kmax !"rigaMax" è l'indice di riga che viene considerato dal primo euristico greedy
+  end-procedure
+
+  procedure ColonnaWtmaxMaggiore !restituisce l'indice della colonna con massimo valore di wtmax2 residuo
+    declarations
+      massimo: real !variabile locale per memorizzare il massimo valore "wtmax2"
+      kmax: integer !variabile locale per memorizzare l'indice della colonna a cui corrisponde il massimo valore "wtmax2"
+    end-declarations
+
+    !inizializzazione variabili
+    massimo := -MAX_REAL
+
+    !esecuzione algoritmo
+    forall(t in mesi | colonneEscluse(t) <> 1) do !non considero le colonne che sono già state completate
+      if wtmax2(t) > massimo then
+        massimo := wtmax2(t)
+        kmax := t
+      end-if
+    end-do
+    colMax := kmax !"colMax" è l'indice di colonna che viene considerato dal primo euristico greedy
+  end-procedure
+  
+  procedure Print(nome: string, z: integer, x: array(macchinari,mesi) of integer)
+    writeln
+    writeln("Risultati ", nome, ":")
+    writeln("\tZ = ", z, " - ", sum(i in macchinari) (forecast(i) - sum(t in mesi) x(i,t))) !stampa la z e lo scostamento dal forecast totale
+    writeln("\tTempo di esecuzione= ", t2-t1)
+    !stampa x
+    writeln
+    writeln("X")
+    write("\t")
+    forall(t in mesi)  write("\t(",t,")")
+    writeln
+    forall(i in macchinari) do
+      write("(",i," - ", forecast(i) - sum(t in mesi) x(i,t),") ") !per ogni macchina indica anche lo scostamento dal forecast
+      forall(t in mesi) write("\t ",x(i,t)) !stampa matrice di soluzioni x
+      writeln
+    end-do
+    !stampa ore rimanenti
+    writeln
+    writeln("Ore")
+    write("\t")
+    forall(t in mesi)  write("\t(",t,")")
+    writeln
+    forall(i in macchinari) do
+      write("(",i," - ",kore(i),") ") !per ogni macchina indica anche il tempo di ciclo
+      forall(t in mesi) do
+        write("\t",witmax(i,t) - x(i,t)*(1+A)*kore(i)) !stampa la matrice di ore macchina rimanenti
+      end-do
+      writeln
+    end-do
+    write("\t")
+    forall(t in mesi) write("\t",wtmax(t) - sum(i in macchinari) x(i,t)*(1+A)*kore(i)) !stampa le ore macchina rimanenti per mese
+    writeln
+  end-procedure
+end-model

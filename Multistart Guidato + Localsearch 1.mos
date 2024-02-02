@@ -1,0 +1,331 @@
+model ModelName
+  options noimplicit
+  uses "mmxprs", "mmsystem"
+
+  forward procedure InputDati !input tesina
+  forward procedure AlgoritmoEuristico1  !primo algoritmo euristico greedy
+  forward procedure RigaSommaWitmaxMaggiore  !restituisce l'indice della riga con massima somma dei witmax2 residui(NECESSARIA PER EURISTICO)
+  forward procedure MultiStart  !secondo algoritmo multi start
+
+  declarations
+    n: integer
+    T: integer
+    inputfile = "Instances/Dati-50.dat"
+    solution_status: string
+    eps = 0.001
+    t1, t2: real
+  end-declarations
+
+  initialisations from inputfile
+    n
+    T
+  end-initialisations
+
+  declarations
+    macchinari = 1..n ! range delle macchine utilizzabili
+    mesi = 1..T ! range dei mesi
+    forecast: array(macchinari) of integer ! Forecast commerciale per il tipo i (domanda)
+    kore: array(macchinari) of integer ! ore necessarie per realizzare il tipo i (tempo ciclo)
+    witmax: array(macchinari, mesi) of real ! ore di lavoro disponibili nel periodo t per produrre macchine di tipo i
+    wtmax: array(mesi) of real ! ore di lavoro disponibili nel periodo t
+    V: array(macchinari) of integer ! cadenza media di produzione mensile per il prodotto imports
+    A: real ! costante legata all’assenteismo medio (6%)
+    R: integer !risorse
+    Rn: array(macchinari) of integer !risorse per macchinario
+    Giorni: array(mesi) of integer !giorni lavorativi per mese
+    
+    feasible: boolean !variabile booleana che assume valore true quando la specifica soluzione è ammissibile (NECESSARIA PER LOCAL SEARCH)
+    
+    !VARIABILI EURISTICO 1
+    xeur1: array(macchinari, mesi) of integer !soluzione euristica del primo algoritmo greedy
+    zeur1: integer !valore soluzione euristica del primo algoritmo greedy
+    feur1: integer !scarto totale dal forecast del primo algoritmo greedy
+    righeEscluse: array(macchinari) of integer !memorizza quali righe non devono essere più considerate dal primo algoritmo greedy
+    colonneEscluse: array(mesi) of integer !memorizza quali colonne non devono essere più considerate dal primo algoritmo greedy
+    rigaMax: integer !riga con somma dei Witmax2 maggiore
+    colMax: integer !colonna con Wtmax2 maggiore
+    witmax2: array(macchinari, mesi) of real ! ore di lavoro residue disponibili nel periodo t per produrre macchine di tipo i
+    wtmax2: array(mesi) of real ! ore di lavoro residue disponibili nel periodo t per produrre macchine
+  end-declarations
+
+  forward procedure Print(nome: string, z: integer, x: array(macchinari,mesi) of integer) !stampa soluzioni euristico
+  forward procedure CheckFeasibility (solution: array(macchinari, mesi) of integer) !imposta il valore della variabile globale "feasible" a seconda dell'ammissibilità della soluzione data in input (NECESSARIA PER LOCAL SEARCH)
+  forward procedure AlgoritmoLocalSearch (xPartenza: array(macchinari, mesi) of integer, zPartenza: integer) !algoritmo LocalSearch
+
+  !MAIN
+  InputDati
+  
+  MultiStart !secondo algoritmo Multi Start
+
+  !END MAIN
+  procedure InputDati
+    initializations from inputfile
+      forecast
+      kore
+      V
+      A
+      R
+      Rn
+      Giorni
+    end-initializations
+    forall(i in macchinari, t in mesi) witmax(i,t):=Giorni(t) * Rn(i) * 8
+    forall(t in mesi) wtmax(t):= Giorni(t) * R * 8
+  end-procedure
+  
+  procedure MultiStart !secondo algoritmo multi start
+    t1 := gettime !tempo iniziale
+    declarations
+      xbestMS: array(macchinari, mesi) of integer !incumbent solution 
+      zbestMS: integer !valore incumbent solution 
+      fBestMS: integer !scarto totale dal forecast incumbent solution
+      max_iter: integer !numero di iterazioni dell'algoritmo multi start
+      iter : integer !contatore iterazioni dell'algoritmo multi start
+    end-declarations
+
+    !inizializzazione variabili
+    zbestMS := MAX_INT
+    fBestMS := MAX_INT
+    forall(i in macchinari, t in mesi) xbestMS(i,t) := 0 !azzeramento dell'incumbent solution
+    max_iter := 1000
+
+    !esecuzione algoritmo
+    while(iter < max_iter) do
+      AlgoritmoEuristico1 !AlgoritmoEuristico1 con componente randomica
+      if (fBestMS > feur1 or (fBestMS = feur1 and zbestMS > zeur1)) then
+        xbestMS := xeur1 !aggiornamento incumbent solution multi start
+        zbestMS := zeur1 !aggiornamento valore dell'incumbent solution multi start
+        fBestMS := feur1 !aggiornamento scarto totale dal forecast dell'incumbent solution
+      end-if
+      iter+=1
+    end-do
+    t2 := gettime !tempo finale
+
+    !scrittura output a schermo
+    Print("Algoritmo multi start ", zbestMS, xbestMS)
+    
+    AlgoritmoLocalSearch(xbestMS, zbestMS)
+  end-procedure
+  
+  procedure AlgoritmoEuristico1 !primo algoritmo euristico greedy
+    declarations
+      prosegui: boolean !variabile che quando assume valore false, interrompe il ciclo while principale
+      saturazione: integer !contatore che identifica la saturazione delle ore disponibili
+      valAleatorio1: integer !valore utilizzato per introdurre stocasticità quando viene eseguito il MultiStart
+      valAleatorio2: integer !valore utilizzato per introdurre stocasticità quando viene eseguito il MultiStart
+      soglia: integer !soglia utilizzata per introdurre stocasticità quando viene eseguito il MultiStart
+    end-declarations
+
+    !inizializzazione variabili
+    forall(i in macchinari, t in mesi) xeur1(i,t) := 0 !azzeramento della soluzione euristica
+    forall(i in macchinari) righeEscluse(i) := 0 !azzeramento array 'righeEscluse'
+    forall(t in mesi) colonneEscluse(t) := 0 !azzeramento array 'colonneEscluse'
+    zeur1 := 0 !azzeramento valore della soluzione euristica
+    feur1 := 0 !azzeramento scarto totale dal forecast della soluzione euristica
+    prosegui := true
+    soglia := 20 !valore utilizzato per stabilire la probabilità di inserimento di un macchinario in una data cella di xeur1 (utile per il MultiStart)
+    wtmax2 := wtmax !creazione di una copia di wtmax che verrà aggiornata al procedere delle iterazioni
+    witmax2 := witmax !creazione di una copia di witmax che verrà aggiornata al procedere delle iterazioni
+
+    !esecuzione algoritmo
+    while(prosegui) do !questo ciclo terminerà quando ogni riga di xeur1 raggiungerà la forecast richiesta oppure esaurirà le ore disponibili per le lavorazioni
+
+      RigaSommaWitmaxMaggiore !restituisce l'indice della riga con massima somma dei witmax2 residui ("rigaMax")
+      saturazione := 0
+      forall(t in mesi) do
+        valAleatorio1 := ceil(random*100) !se viene eseguito il MultiStart, allora valAleatorio1 è un numero intero random tra 1 e 100
+        if( kore(rigaMax)*(1+A) <= wtmax2(t) and kore(rigaMax)*(1+A) <= witmax2(rigaMax,t) and righeEscluse(rigaMax) = 0 ) then !se riesco ad aggiungere una macchina nella cella xeur1(RigaMax,t) senza violare i vincoli, la inserisco
+          if valAleatorio1 > soglia then !se non viene eseguito il MultiStart, condizione sempre soddisfatta
+            xeur1(rigaMax,t) += 1
+            wtmax2(t) := wtmax2(t) - (kore(rigaMax)*(1+A)) !dopo aver inserito la macchina, aggiorno il Wtmax2 relativo al mese t
+            witmax2(rigaMax,t) := witmax2(rigaMax,t) - (kore(rigaMax)*(1+A)) !dopo aver inserito la macchina, aggiorno il Witmax2 relativo al mese t e alla riga "rigaMax"
+            if( sum(g in mesi) xeur1(rigaMax, g) = forecast(rigaMax) ) then !se la somma delle xeur1 sulla riga "rigaMax" per g = 1..T raggiunge la forecast, allora quella riga è completa
+              righeEscluse(rigaMax) := 1 !imposto valore 1 nella cella di indice "rigaMax" dell'array "righeEscluse"
+              break
+            end-if
+          end-if
+        else saturazione += 1
+        end-if
+      end-do
+      if saturazione = T then !data la riga "rigaMax", se non è possibile inserire macchine in lavorazione in nessun mese, allora quella riga è completa
+        righeEscluse(rigaMax) := 1 !imposto valore 1 nella cella di indice "rigaMax" dell'array "righeEscluse"
+      end-if
+
+      colMax := ceil(random*T)
+      saturazione := 0
+
+      forall(i in macchinari) do !per ogni riga della colonna "colMax", controllo se posso aggiungere un macchinario in lavorazione
+        valAleatorio2 := ceil(random*100) !se eseguo il MultiStart, allora valAleatorio2 è un numero intero random tra 1 e 100
+        if( kore(i)*(1+A) <= wtmax2(colMax) and kore(i)*(1+A) <= witmax2(i,colMax) and righeEscluse(i) = 0 ) then
+          if valAleatorio2 > soglia then  !se non eseguo il MultiStart, condizione sempre soddisfatta
+            xeur1(i,colMax) += 1
+            wtmax2(colMax) := wtmax2(colMax) - (kore(i)*(1+A)) !dopo aver inserito la macchina, aggiorno il Wtmax2 relativo al mese "colMax"
+            witmax2(i,colMax) := witmax2(i,colMax) - (kore(i)*(1+A)) !dopo aver inserito la macchina, aggiorno il Witmax2 relativo al mese "colMax" e alla riga i
+            if( sum(g in mesi) xeur1(i, g) = forecast(i) ) then !se la somma delle xeur1 sulla riga i per g = 1..T raggiunge la forecast, allora quella riga è completa
+              righeEscluse(i) := 1 !imposto valore 1 nella cella di indice i dell'array "righeEscluse"
+            end-if
+          end-if
+        else
+          saturazione += 1
+        end-if
+      end-do
+      if saturazione = n then !data la colonna "colMax", se per ogni riga non posso inserire nessun tipo di macchina in lavorazione, allora quella colonna è completa
+        colonneEscluse(colMax) := 1 !imposto valore 1 nella cella di indice "colMax" dell'array "colonneEscluse"
+      end-if
+      if sum(i in macchinari) righeEscluse(i) = n then !se tutte le righe sono complete, allora esci dal ciclo while
+        prosegui:=false
+      end-if
+
+    end-do !fine ciclo while
+
+    forall(i in macchinari) do
+      feur1 := feur1 + forecast(i) - sum(k in mesi) xeur1(i,k) !scarto totale dal forecast della soluzione euristica
+      forall(t in mesi) do
+        zeur1 := zeur1 + abs(V(i) - xeur1(i,t)) !valore soluzione euristica
+      end-do
+    end-do
+  end-procedure
+
+  procedure RigaSommaWitmaxMaggiore !restituisce l'indice della riga con massima somma dei witmax2 residui
+    declarations
+      massimo: real !variabile locale per memorizzare il massimo valore "somma witmax2"
+      kmax: integer !variabile locale per memorizzare l'indice della riga a cui corrisponde il massimo valore "somma witmax2"
+    end-declarations
+
+    !inizializzazione variabili
+    massimo := -MAX_REAL
+
+    !esecuzione algoritmo
+    forall(k in macchinari | righeEscluse(k) <> 1) do !le righe che sono già state completate non si considerano
+      if (sum(t in mesi) witmax2(k,t) > massimo) then
+        massimo := sum(t in mesi) witmax2(k,t)
+        kmax := k
+      end-if
+    end-do
+    rigaMax := kmax !"rigaMax" è l'indice di riga che viene considerato dal primo euristico greedy
+  end-procedure
+  
+  procedure AlgoritmoLocalSearch (xPartenza: array(macchinari, mesi) of integer, zPartenza: integer) !algoritmo Local Search
+    t1:= gettime !tempo iniziale esecuzione Local Search
+    declarations
+      xIntorno: array(macchinari, mesi) of integer !soluzione trovata nell'intorno della soluzione di partenza
+      zIntorno: integer !valore della soluzione trovata nell'intorno della soluzione di partenza
+      fIntorno: integer !scarto totale dal forecast della soluzione trovata nell'intorno della soluzione di partenza
+      fPartenza: integer !scarto totale dal forecast della soluzione di partenza
+      riga: integer !riga della soluzione di partenza scelta dalla Local Search
+      col1: integer !colonna della soluzione di partenza scelta dalla Local Search
+      col2: integer !colonna della soluzione di partenza scelta dalla Local Search
+      iterazioniLS: integer !massimo numero di iterazioni della Local Search senza miglioramenti
+      contatore1: integer !contatore iterazioni eseguite senza miglioramenti
+      contatore2: integer !contatore usato per terminare l'esecuzione nel caso in cui non si trovassero soluzioni nell'intorno
+    end-declarations
+
+    !inizializzazione variabili
+    iterazioniLS := zPartenza*10 !massimo numero di iterazioni senza miglioramenti
+    forall(m in macchinari) 
+      fPartenza := fPartenza + forecast(m) - sum(k in mesi) xPartenza(m,k) !scarto totale dal forecast della soluzione di partenza
+
+    !esecuzione algoritmo
+    while(contatore1 < iterazioniLS) do
+
+      xIntorno := xPartenza !riparto sempre dal punto della regione ammissibile in cui mi trovo
+      zIntorno := 0
+      fIntorno := 0
+      riga := ceil(random*n) !seleziono un indice di riga random
+      col1 := ceil(random*T) !seleziono un indice di colonna random
+      col2 := ceil(random*T) !seleziono un indice di colonna random
+      while(col1 = col2) col2 := ceil(random*T) !se sono state selezionate due colonne identiche, una si cambia finchè non diventano diverse
+
+      if( sum(k in macchinari) (xIntorno(k,col1)*kore(k)*(1+A)) <= (wtmax(col1))-(kore(riga)*(1+A)) and (xIntorno(riga,col1)*kore(riga)*(1+A)) <= (witmax(riga,col1)-kore(riga)*(1+A)) and xIntorno(riga,col2)>0 )then !se è possibile aggiungere una macchina nella cella xIntorno(riga,col1), si aggiunge
+        xIntorno(riga,col1) += 1
+        xIntorno(riga,col2) -= 1 !si sottrae una macchina nella cella xIntorno(riga,col2) poichè ne è stata aggiunta una nell'altra cella
+        CheckFeasibility(xIntorno) !controllo dell'ammissibilità della soluzione xIntorno
+        if feasible = false then !se la soluzione xIntorno non è feasible allora si prova a migliorare le righe che non rispettano la forecast
+          forall( i in macchinari | sum(k in mesi) xIntorno(i,k) < forecast(i) ) do
+            forall( f in mesi | sum(l in macchinari) (xIntorno(l,f)*kore(l)*(1+A)) <= (wtmax(f)-(kore(i)*(1+A)) ) and !data la riga i con forecast non rispettata, si controlla per ogni mese se è possibile aggiungere una macchina senza violare i vincoli
+              (xIntorno(i,f)*kore(i)*(1+A)) <= (witmax(i,f)-kore(i)*(1+A)) and
+              (sum(g in mesi) xIntorno(i,g) <> forecast(i)) ) do
+              xIntorno(i,f) += 1 !si aggiunge una macchina senza violare i vincoli di ore e di forecast
+            end-do
+          end-do
+        end-if
+
+        forall(i in macchinari, t in mesi) !si calcola il valore della soluzione trovata nell'intorno
+          zIntorno := zIntorno + abs(V(i) - xIntorno(i,t))
+        forall(m in macchinari) 
+          fIntorno := fIntorno + forecast(m) - sum(k in mesi) xIntorno(m,k)
+
+        if fIntorno < fPartenza or zIntorno <= zPartenza then !se la soluzione ottenuta nell'intorno ha un minor scarto totale dal forecast rispetto alla soluzione di partenza, ci si sposta(first improvement)
+          !altrimenti, dato che la soluzione ottenuta nell'intorno non può avere scarto totale dal forecast peggiore rispetto alla soluzione di partenza, ci si sposta se e solo se lo scarto totale dalla cadenza è migliore/equivalente
+          if fIntorno = fPartenza and zIntorno = zPartenza then !se gli scarti totali dal forecast e dalla cadenza sono rimasti invariati, allora non si è ottenuto un miglioramento (però lo spostamento è avvenuto comunque perchè qualcosa nella soluzione è cambiato)
+            contatore1 := contatore1 + 1
+          end-if
+          xPartenza := xIntorno !aggiorno la soluzione di partenza
+          zPartenza := zIntorno !aggiorno il valore della soluzione di partenza
+          fPartenza := fIntorno !aggiorno lo scarto totale dal forecast della soluzione di partenza
+        else !se lo scarto totale dal forecast è rimasto invariato ma lo scarto totale dalla cadenza è peggiorato allora non ci si sposta e si incrementa contatore1 perchè non si sono ottenuti miglioramenti
+          contatore1 := contatore1 + 1 
+        end-if
+      end-if
+      contatore2 := contatore2 + 1
+      if contatore2 = n*n*T then !se sono state eseguite troppe iterazioni ci si ferma perchè potrebbe essere che non si riesca a trovare una soluzione nell'intorno
+        break
+      end-if
+
+    end-do !fine iterazioni Local Search
+    t2 := gettime !tempo finale esecuzione Local Search
+    !scrittura output a schermo
+    Print("Algoritmo Local Search ", zPartenza, xPartenza)
+  end-procedure
+  
+  procedure CheckFeasibility (solution: array(macchinari, mesi) of integer) !imposta il valore della variabile globale "feasible" a seconda dell'ammissibilità della soluzione data in input
+    declarations
+      contatoreFeasibility: integer !contatore usato per stabilire se tutte le righe di una data soluzione hanno raggiunto la forecast richiesta
+    end-declarations
+
+    !inizializzazione variabili
+    contatoreFeasibility := 0
+
+    !esecuzione algoritmo
+    forall(i in macchinari)
+      if sum(t in mesi) solution(i,t) = forecast(i) then
+        contatoreFeasibility += 1
+      end-if
+    if contatoreFeasibility = n then
+      feasible := true !se feasible, allora tutte le forecast sono state soddisfatte (rispettando i vincoli di ore)
+    end-if
+  end-procedure
+
+  procedure Print(nome: string, z: integer, x: array(macchinari,mesi) of integer)
+    writeln
+    writeln("Risultati ", nome, ":")
+    writeln("\tZ = ", z, " - ", sum(i in macchinari) (forecast(i) - sum(t in mesi) x(i,t))) !stampa la z e lo scostamento dal forecast totale
+    writeln("\tTempo di esecuzione= ", t2-t1)
+    !stampa x
+    writeln
+    writeln("X")
+    write("\t")
+    forall(t in mesi)  write("\t(",t,")")
+    writeln
+    forall(i in macchinari) do
+      write("(",i," - ", forecast(i) - sum(t in mesi) x(i,t),") ") !per ogni macchina indica anche lo scostamento dal forecast
+      forall(t in mesi) write("\t ",x(i,t)) !stampa matrice di soluzioni x
+      writeln
+    end-do
+    !stampa ore rimanenti
+    writeln
+    writeln("Ore")
+    write("\t")
+    forall(t in mesi)  write("\t(",t,")")
+    writeln
+    forall(i in macchinari) do
+      write("(",i," - ",kore(i),") ") !per ogni macchina indica anche il tempo di ciclo
+      forall(t in mesi) do
+        write("\t",witmax(i,t) - x(i,t)*(1+A)*kore(i)) !stampa la matrice di ore macchina rimanenti
+      end-do
+      writeln
+    end-do
+    write("\t")
+    forall(t in mesi) write("\t",wtmax(t) - sum(i in macchinari) x(i,t)*(1+A)*kore(i)) !stampa le ore macchina rimanenti per mese
+    writeln
+  end-procedure
+end-model

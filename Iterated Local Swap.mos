@@ -1,0 +1,423 @@
+model ModelName
+  options noimplicit
+  uses "mmxprs", "mmsystem"
+
+  forward procedure InputDati !input da file
+  forward procedure EuristicoPesato !Euristico greedy
+  forward procedure Selettore !seleziona il mese e la macchina a cui aggiungere produzione
+
+  declarations
+    n: integer !numero macchine
+    T: integer !numero mesi
+    inputfile = "Instances/Dati-20C.dat"
+    t1, t2: real !tempi esecuzione
+  end-declarations
+
+  initialisations from inputfile
+    n
+    T
+  end-initialisations
+
+  declarations
+    !variabili input
+    macchinari = 1..n
+    mesi = 1..T
+    forecast: array(macchinari) of integer !Forecast commerciale per il tipo i (domanda)
+    kore: array(macchinari) of integer !ore necessarie per realizzare il tipo i (tempo ciclo)
+    witmax: array(macchinari, mesi) of real !ore di lavoro disponibili nel periodo t per produrre macchine di tipo i
+    wtmax: array(mesi) of real !ore di lavoro disponibili nel periodo t
+    V: array(macchinari) of integer !cadenza media di produzione mensile per il tipo di macchinario
+    A: real !costante legata all’assenteismo medio
+    R: integer !risorse
+    Rn: array(macchinari) of integer !risorse per macchinario
+    Giorni: array(mesi) of integer !giorni lavorativi per mese
+
+    !variabili euristico
+    xeur: array(macchinari,mesi) of integer !soluzione euristico greedy
+    zeur: integer !valore soluzione euristico greedy
+    tm: array(macchinari, mesi) of real !tempo lavorazione per macchina per mese restante
+    ttot: array(mesi) of real !tempo lavorazione per mese restante
+    mprod: array(macchinari) of integer !macchine prodotte per modello
+    mese: integer !mese selezionato a cui aggiungere produzione
+    mac: integer !macchina selezionata a cui aggiungere produzione
+    padd: integer !produzione da aggiungere
+
+    !variabili local search
+    xLS: array(macchinari, mesi) of integer !soluzione ricerca locale 
+    zLS: integer !valore soluzione ricerca locale
+    fLS: integer !scarto totale dal forecast della soluzione ottenuta con la ricerca locale
+    tmLS: array(macchinari, mesi) of real !tempo residuo per le lavorazioni (mese /macchinario)
+    ttotLS: array(mesi) of real !tempo mensile residuo per le lavorazioni
+    mprodLS: array(macchinari) of integer !numero di unità prodotte per ogni tipo di macchinario
+    feasible: boolean !variabile booleana che assume valore true quando la specifica soluzione è ammissibile (NECESSARIA PER LOCAL SEARCH)
+
+    !variabili swap
+    mesiOrder: array(mesi, 1..2) of integer !matrice di due array di mesi ordinati in ordine casuale
+    maccOrder: array(macchinari, 1..2) of integer !matrice di due array di tipi di macchine ordinati in ordine casuale
+  end-declarations
+
+  forward procedure Print(nome: string, z: integer, x: array(macchinari,mesi) of integer) !stampa soluzioni euristico
+  forward procedure IteratedLocalSwap(z: integer, x: array(macchinari,mesi) of integer) !metaeuristico ILS basato su perturbazione di tipo swap
+  forward procedure Mesi_ordinamento_casuale !ordinamento casuale di mesi
+  forward procedure Macchine_ordinamento_casuale !ordinamento casuale di tipi di macchine
+  forward procedure CheckFeasibility (solution: array(macchinari, mesi) of integer) !imposta il valore della variabile globale "feasible" a seconda dell'ammissibilità della soluzione data in input (NECESSARIA PER LOCAL SEARCH)
+  forward procedure AlgoritmoLocalSearch (xPartenza: array(macchinari, mesi) of integer, zPartenza: integer) !algoritmo LocalSearch
+
+  !MAIN
+  InputDati !lettura da file
+  EuristicoPesato !euristico greedy
+  IteratedLocalSwap(zeur, xeur) !metaeuristico ILS basato su perturbazione di tipo swap
+
+  !END MAIN
+  procedure InputDati !lettura da file
+    initializations from inputfile
+      forecast
+      kore
+      V
+      A
+      R
+      Rn
+      Giorni
+    end-initializations
+    forall(i in macchinari, t in mesi) witmax(i,t) := Giorni(t) * Rn(i) * 8 !calcola ore di lavoro disponibili nel periodo t per produrre macchine di tipo i
+    forall(t in mesi) wtmax(t) := Giorni(t) * R * 8 !calcola ore di lavoro disponibili nel periodo t
+  end-procedure
+
+  procedure EuristicoPesato  !euristico greedy
+    t1:=gettime
+
+    !inizializzazione variabili di supporto
+    forall(i in macchinari, t in mesi) tm(i,t) := witmax(i,t)
+    forall(t in mesi) ttot(t) := wtmax(t)
+
+    Selettore !seleziona la posizione migliore a cui aggiungere la produzione
+    while(padd <> 0) do !finchè ho possibilità di aggiungere produzione
+      mprod(mac) += padd !incremento le macchine prodotte totali per la macchina selezionata
+      xeur(mac,mese) += padd !incremento le macchine prodotte quel mese
+      ttot(mese) -= padd*kore(mac)*(1+A) !incremento le ore lavorate quel mese
+      tm(mac,mese) -= padd*kore(mac)*(1+A) !incremento le ore lavorate quel mese a quella macchina
+      Selettore !seleziono nuovamente una posizione a cui aumentare la produzione
+    end-do
+
+    zeur := sum(i in macchinari, t in mesi) abs(xeur(i,t) - V(i)) !calcolo la z
+    t2:=gettime
+    Print("EuristicoPesato", zeur, xeur) !output
+  end-procedure
+
+  procedure Selettore
+    declarations
+      massimo, peso: real
+    end-declarations
+
+    mese := 8 
+    mac := 1
+    padd := 0
+    massimo := -MAX_REAL
+
+    forall(i in macchinari | mprod(i) < forecast(i)) do !per tutti i macchinari per cui non ho ancora raggiunto il forecast
+      forall(t in mesi | ttot(t) >= kore(i)*(1+A) and tm(i,t) >= kore(i)*(1+A)) do !per tutti i mesi per cui ho ancora possibilità di incrementare la produzione
+        peso := (forecast(i) - mprod(i))*kore(i)+ttot(t)+tm(i,t) !assegno alla coppia macchina-mese un peso, dà priorità a macchine ancora lontane dal forecast ed a mesi con più tempo disponibile
+        if xeur(i,t) < V(i)  then !se per quel mese non ho ancora raggiunto la cadenza
+          peso := peso*100        !incentiva la scelta di quel mese
+        else
+          peso := peso/100        !altrimenti la penalizza
+        end-if
+
+        if peso > massimo then !se il peso mese-macchina è maggiore, seleziono la coppia
+          mese := t
+          mac := i
+          padd := 1           !se non entra mai in questo if, quindi se non c'è nessuna coppia che rispetti i vincoli, non aggiunge produzione, quindi ferma l'euristico
+          massimo := peso     !aggiorna peso massimo
+        end-if
+      end-do !fine ciclo mesi
+    end-do !fine ciclo macchine
+  end-procedure
+
+  procedure AlgoritmoLocalSearch (xPartenza: array(macchinari, mesi) of integer, zPartenza: integer) !algoritmo Local Search
+    !t1:= gettime !tempo iniziale esecuzione Local Search
+    declarations
+      xIntorno: array(macchinari, mesi) of integer !soluzione trovata nell'intorno della soluzione di partenza
+      zIntorno: integer !valore della soluzione trovata nell'intorno della soluzione di partenza
+      fIntorno: integer !scarto totale dal forecast della soluzione trovata nell'intorno della soluzione di partenza
+      fPartenza: integer !scarto totale dal forecast della soluzione di partenza
+      riga: integer !riga della soluzione di partenza scelta dalla Local Search
+      col1: integer !colonna della soluzione di partenza scelta dalla Local Search
+      col2: integer !colonna della soluzione di partenza scelta dalla Local Search
+      iterazioniLS: integer !massimo numero di iterazioni della Local Search senza miglioramenti
+      contatore1: integer !contatore iterazioni eseguite senza miglioramenti
+      contatore2: integer !contatore usato per terminare l'esecuzione nel caso in cui non si trovassero soluzioni nell'intorno
+    end-declarations
+
+    !inizializzazione variabili
+    iterazioniLS := n*T*10 !massimo numero di iterazioni senza miglioramenti
+    fPartenza := 0 !non necessario
+    contatore1 := 0
+    contatore2:= 0
+    forall(m in macchinari)
+      fPartenza := fPartenza + forecast(m) - sum(k in mesi) xPartenza(m,k) !scarto totale dal forecast della soluzione di partenza
+
+    !esecuzione algoritmo
+    while(contatore1 < iterazioniLS) do
+
+      xIntorno := xPartenza !riparto sempre dal punto della regione ammissibile in cui mi trovo
+      zIntorno := 0
+      fIntorno := 0
+      riga := ceil(random*n) !seleziono un indice di riga random
+      col1 := ceil(random*T) !seleziono un indice di colonna random
+      col2 := ceil(random*T) !seleziono un indice di colonna random
+      while(col1 = col2) col2 := ceil(random*T) !se sono state selezionate due colonne identiche, una si cambia finchè non diventano diverse
+
+      if( sum(k in macchinari) (xIntorno(k,col1)*kore(k)*(1+A)) <= (wtmax(col1))-(kore(riga)*(1+A)) and (xIntorno(riga,col1)*kore(riga)*(1+A)) <= (witmax(riga,col1)-kore(riga)*(1+A)) and xIntorno(riga,col2)>0 )then !se è possibile aggiungere una macchina nella cella xIntorno(riga,col1), si aggiunge
+        xIntorno(riga,col1) += 1
+        xIntorno(riga,col2) -= 1 !si sottrae una macchina nella cella xIntorno(riga,col2) poichè ne è stata aggiunta una nell'altra cella
+        CheckFeasibility(xIntorno) !controllo dell'ammissibilità della soluzione xIntorno
+        if feasible = false then !se la soluzione xIntorno non è feasible allora si prova a migliorare le righe che non rispettano la forecast
+          forall( i in macchinari | sum(k in mesi) xIntorno(i,k) < forecast(i) ) do
+            forall( f in mesi | sum(l in macchinari) (xIntorno(l,f)*kore(l)*(1+A)) <= (wtmax(f)-(kore(i)*(1+A)) ) and !data la riga i con forecast non rispettata, si controlla per ogni mese se è possibile aggiungere una macchina senza violare i vincoli
+              (xIntorno(i,f)*kore(i)*(1+A)) <= (witmax(i,f)-kore(i)*(1+A)) and
+              (sum(g in mesi) xIntorno(i,g) <> forecast(i)) ) do
+              xIntorno(i,f) += 1 !si aggiunge una macchina senza violare i vincoli di ore e di forecast
+            end-do
+          end-do
+        end-if
+
+        forall(i in macchinari, t in mesi) !si calcola il valore della soluzione trovata nell'intorno
+          zIntorno := zIntorno + abs(V(i) - xIntorno(i,t))
+        forall(m in macchinari)
+          fIntorno := fIntorno + forecast(m) - sum(k in mesi) xIntorno(m,k)
+        if fIntorno < fPartenza or zIntorno <= zPartenza then !se la soluzione ottenuta nell'intorno ha un minor scarto totale dal forecast rispetto alla soluzione di partenza, ci si sposta(first improvement)
+          !altrimenti, dato che la soluzione ottenuta nell'intorno non può avere scarto totale dal forecast peggiore rispetto alla soluzione di partenza, ci si sposta se e solo se lo scarto totale dalla cadenza è migliore/equivalente
+          if fIntorno = fPartenza and zIntorno = zPartenza then !se gli scarti totali dal forecast e dalla cadenza sono rimasti invariati, allora non si è ottenuto un miglioramento (però lo spostamento è avvenuto comunque perchè qualcosa nella soluzione è cambiato)
+            contatore1 := contatore1 + 1
+          end-if
+          xPartenza := xIntorno !aggiorno la soluzione di partenza
+          zPartenza := zIntorno !aggiorno il valore della soluzione di partenza
+          fPartenza := fIntorno !aggiorno lo scarto totale dal forecast della soluzione di partenza
+        else !se lo scarto totale dal forecast è rimasto invariato ma lo scarto totale dalla cadenza è peggiorato allora non ci si sposta e si incrementa contatore1 perchè non si sono ottenuti miglioramenti
+          contatore1 := contatore1 + 1
+        end-if
+      end-if
+      contatore2 := contatore2 + 1
+      if contatore2 = n*n*T then !se sono state eseguite troppe iterazioni ci si ferma perchè potrebbe essere che non si riesca a trovare una soluzione nell'intorno
+        break
+      end-if
+
+    end-do !fine iterazioni Local Search
+    fLS := fPartenza
+    xLS := xPartenza
+    zLS := zPartenza
+    forall(k in macchinari, w in mesi) tmLS(k,w) := witmax(k,w) - xPartenza(k,w)*(1+A)*kore(k)
+    forall(w in mesi) ttotLS(w) := wtmax(w) - sum(k in macchinari) xPartenza(k,w)*(1+A)*kore(k)
+    forall(k in macchinari) mprodLS(k) := sum(w in mesi) xPartenza(k,w)
+  end-procedure
+
+  procedure IteratedLocalSwap(z: integer, x: array(macchinari,mesi) of integer) !metaeuristico ILS basato su perturbazione di tipo swap
+    declarations
+      xs, xt: array(macchinari,mesi) of integer !incumbent solution, current solution
+      zs, zt: integer !valore incumbent solution, valore current solution
+
+      tms, tmt: array(macchinari, mesi) of real !tempo lavorazione per macchina per mese restante
+      ttots, ttott: array(mesi) of real !tempo lavorazione per mese restante
+      mprods, mprodt: array(macchinari) of integer !macchine prodotte per modello
+      fs, ft: integer !scostamento forecast
+
+      paddi, paddj: integer !macchine da aggiungere
+      i, j, t, v: integer !variabili cicli
+      noImpr: integer !cicli senza miglioramenti
+      contatore: integer !contatore che memorizza il numero di swap compiuti
+    end-declarations
+    t1:=gettime
+
+    !Assegno i valori della soluzione euristica ottimizzata all'incumbent solution
+    AlgoritmoLocalSearch(x,z)
+    xs := xLS
+    zs := zLS
+    !calcolo le variabili di supporto
+    tms := tmLS
+    ttots := ttotLS
+    mprods := mprodLS
+    fs := fLS
+
+    while(noImpr < n*T) do !continuo finchè per n*T volte di fila non ho miglioramenti
+      noImpr += 1
+      !Assegno le variabili della soluzione migliore alla soluzione temporanea (criterio di accettazione random walk)
+      xt := xs
+      tmt := tms
+      ttott := ttots
+      mprodt := mprods
+
+      !ordino mesi e macchine in modo casuale
+      Mesi_ordinamento_casuale
+      Macchine_ordinamento_casuale
+      forall(indi, indj in macchinari, indt, indv in mesi| maccOrder(indi, 1) <> maccOrder(indj, 2) and mesiOrder(indt, 1) <> mesiOrder(indv, 2)) do !scorro tutte le possibili coppie macchina-mese, evitando quelle coincidenti
+        i := maccOrder(indi, 1)
+        j := maccOrder(indj, 2)
+        t := mesiOrder(indt, 1)
+        v := mesiOrder(indv, 2)
+        !se posso diminuire da una coppia ed aumentare all'altra, e viceversa, rispettando i vincoli (nel file Allegato 1 spiegazione con disegno)
+        if(tmt(i,v) >= kore(i)*(1+A) and tmt(j,t) >= kore(j)*(1+A) and ttott(t) >= (kore(j) - kore(i))*(1+A) and ttott(v) >= (kore(i) - kore(j))*(1+A) and xt(i,t) > 0 and xt(j,v) > 0) then
+          contatore+=1
+          !rimuovo produzione di i da t
+          mprodt(i) -= 1
+          xt(i,t) -= 1
+          ttott(t) += kore(i)*(1+A)
+          tmt(i,t) += kore(i)*(1+A)
+
+          !rimuovo produzione di j da v
+          mprodt(j) -= 1
+          xt(j,v) -= 1
+          ttott(v) += kore(j)*(1+A)
+          tmt(j,v) += kore(j)*(1+A)
+
+          !aggiungo produzione di i a v
+          paddi := floor(minlist(ttott(v)/(kore(i)*(1+A)), tmt(i,v)/(kore(i)*(1+A)), forecast(i)-mprodt(i))) !se riesco aggiungo più di 1 macchina prodotta, rispettando i vincoli
+          mprodt(i) += paddi
+          xt(i,v) += paddi
+          ttott(v) -= paddi*kore(i)*(1+A)
+          tmt(i,v) -= paddi*kore(i)*(1+A)
+
+          !aggiungo produzione di j a t
+          paddj := floor(minlist(ttott(t)/(kore(j)*(1+A)), tmt(j,t)/(kore(j)*(1+A)), forecast(j)-mprodt(j))) !se riesco aggiungo più di 1 macchina prodotta, rispettando i vincoli
+          mprodt(j) += paddj
+          xt(j,t) += paddj
+          ttott(t) -= paddj*kore(j)*(1+A)
+          tmt(j,t) -= paddj*kore(j)*(1+A)
+
+          !calcolo z e scostamento forecast della soluzione dopo aver fatto lo "swap"
+          zt := sum(k in macchinari, w in mesi) abs(xt(k,w) - V(k))
+          ft := sum(k in macchinari) (forecast(k) - mprodt(k))
+          !se compiendo gli swap ottengo una soluzione migliore dell'incumbent solution, allora aggiorno l'incumbent solution
+          if ft < fs or (ft = fs and zt < zs) then !se mi avvicino al forecast, oppure, a parità di scarto totale dal forecast mi avvicino alla cadenza produttiva
+            noImpr := 0 !azzero noImpr poichè si è ottenuto un miglioramento
+            zs := zt
+            xs := xt
+            fs := ft
+            tms := tmt
+            ttots := ttott
+            mprods := mprodt
+          end-if
+          if contatore = n*T then !se ho compiuto un numero di "swap" pari a z, allora esco dal ciclo for poichè ne ho fatti abbastanza
+            contatore:=0
+            break
+          end-if
+        end-if
+      end-do
+
+      AlgoritmoLocalSearch(xt ,zt) !chiamo algoritmo local search per ottimizzare la soluzione perturbata
+
+      if fLS < fs or (fLS = fs and zLS < zs) then !se la soluzione ottimizzata è migliore dell'incumbent solution, allora aggiorno l'incumbent solution
+        noImpr := 0 !azzero noImpr poichè si è ottenuto un miglioramento
+        !Aggiorno l'incumbent solution
+        zs := zLS
+        xs := xLS
+        fs := fLS
+        tms := tmLS
+        ttots := ttotLS
+        mprods := mprodLS
+      end-if
+    end-do !fine ciclo while
+
+    t2:=gettime
+    Print("IteratedLocalSwap", zs, xs) !output
+  end-procedure
+
+  procedure Mesi_ordinamento_casuale !ordinamento random memorizzato in mesiOrder
+    declarations
+      used: array(mesi, 1..2) of integer
+      massimo, tmax: integer
+      mesi_rand: array(mesi, 1..2) of integer
+    end-declarations
+
+    forall(t in mesi, i in 1..2) mesi_rand(t, i):= ceil(random*100) !valori tra 1 e 100
+
+    forall(i in 1..2) do !creo due array casuali
+      forall(t in mesi) do
+        massimo:=-MAX_INT !MAX_INT = massimo valore intero in Xpress Mosel
+        forall(v in mesi) do
+          if (used(v, i)=0 and mesi_rand(v, i)>massimo) then
+            massimo:=mesi_rand(v, i)
+            tmax:=v
+          end-if
+        end-do
+        mesiOrder(t, i):=tmax
+        used(tmax, i):=1
+      end-do
+    end-do
+  end-procedure
+
+  procedure Macchine_ordinamento_casuale !ordinamento random memorizzato in maccOrder
+    declarations
+      used: array(macchinari, 1..2) of integer
+      massimo, imax: integer
+      macc_rand: array(macchinari, 1..2) of integer
+    end-declarations
+
+    forall(i in macchinari, k in 1..2) macc_rand(i, k):= ceil(random*100) !valori tra 1 e 100
+
+    forall(k in 1..2) do !creo due array casuali
+      forall(i in macchinari) do
+        massimo:=-MAX_INT !MAX_INT = massimo valore intero in Xpress Mosel
+        forall(j in macchinari) do
+          if (used(j, k)=0 and macc_rand(j, k)>massimo) then
+            massimo:=macc_rand(j, k)
+            imax:=j
+          end-if
+        end-do
+        maccOrder(i, k):=imax
+        used(imax, k):=1
+      end-do
+    end-do
+  end-procedure
+
+  procedure CheckFeasibility (solution: array(macchinari, mesi) of integer) !imposta il valore della variabile globale "feasible" a seconda dell'ammissibilità della soluzione data in input
+    declarations
+      contatoreFeasibility: integer !contatore usato per stabilire se tutte le righe di una data soluzione hanno raggiunto la forecast richiesta
+    end-declarations
+
+    !inizializzazione variabili
+    contatoreFeasibility := 0
+
+    !esecuzione algoritmo
+    forall(i in macchinari)
+      if sum(t in mesi) solution(i,t) = forecast(i) then
+        contatoreFeasibility += 1
+      end-if
+    if contatoreFeasibility = n then
+      feasible := true !se feasible, allora tutte le forecast sono state soddisfatte (rispettando i vincoli di ore)
+    end-if
+  end-procedure
+
+  procedure Print(nome: string, z: integer, x: array(macchinari,mesi) of integer)
+    writeln
+    writeln("Risultati ", nome, ":")
+    writeln("\tZ = ", z, " - ", sum(i in macchinari) (forecast(i) - sum(t in mesi) x(i,t))) !stampa la z e lo scostamento dal forecast totale
+    writeln("\tTempo di esecuzione= ", t2-t1)
+    !stampa x
+    writeln
+    writeln("X")
+    write("\t")
+    forall(t in mesi)  write("\t(",t,")")
+    writeln
+    forall(i in macchinari) do
+      write("(",i," - ", forecast(i) - sum(t in mesi) x(i,t),") ") !per ogni macchina indica anche lo scostamento dal forecast
+      forall(t in mesi) write("\t ",x(i,t)) !stampa matrice di soluzioni x
+      writeln
+    end-do
+    !stampa ore rimanenti
+    writeln
+    writeln("Ore")
+    write("\t")
+    forall(t in mesi)  write("\t(",t,")")
+    writeln
+    forall(i in macchinari) do
+      write("(",i," - ",kore(i),") ") !per ogni macchina indica anche il tempo di ciclo
+      forall(t in mesi) do
+        write("\t",witmax(i,t) - x(i,t)*(1+A)*kore(i)) !stampa la matrice di ore macchina rimanenti
+      end-do
+      writeln
+    end-do
+    write("\t")
+    forall(t in mesi) write("\t",wtmax(t) - sum(i in macchinari) x(i,t)*(1+A)*kore(i)) !stampa le ore macchina rimanenti per mese
+    writeln
+  end-procedure
+end-model

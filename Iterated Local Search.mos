@@ -1,0 +1,416 @@
+model ModelName
+  options noimplicit
+  uses "mmxprs", "mmsystem"
+
+  forward procedure InputDati !input tesina
+  forward procedure IteratedLocalSearch
+
+  declarations
+    n: integer
+    T: integer
+    inputfile = "Instances/Dati-40C.dat"
+    solution_status: string
+    eps = 0.001
+    t1, t2: real
+  end-declarations
+
+  initialisations from inputfile
+    n
+    T
+  end-initialisations
+
+  declarations
+    macchinari = 1..n ! range delle macchine utilizzabili
+    mesi = 1..T ! range dei mesi
+    forecast: array(macchinari) of integer ! Forecast commerciale per il tipo i (domanda)
+    kore: array(macchinari) of integer ! ore necessarie per realizzare il tipo i (tempo ciclo)
+    witmax: array(macchinari, mesi) of real ! ore di lavoro disponibili nel periodo t per produrre macchine di tipo i
+    wtmax: array(mesi) of real ! ore di lavoro disponibili nel periodo t
+    V: array(macchinari) of integer ! cadenza media di produzione mensile per il prodotto imports
+    A: real ! costante legata all’assenteismo medio (6%)
+    R: integer !risorse
+    Rn: array(macchinari) of integer !risorse per macchinario
+    Giorni: array(mesi) of integer !giorni lavorativi per mese
+    
+    !ARRAY E MATRICI CHE TENGONO TRACCIA DELLE PERTURBAZIONI
+    Cforecast: array(macchinari) of integer !Forecast commerciale perturbato
+    Ckore: array(macchinari) of integer !ore necessarie per realizzare i prodotti perturbate
+    Cwitmax: array(macchinari, mesi) of real !ore di lavoro disponibili nel periodo t per realizzare il prodotto i perturbate
+    Cwtmax: array(mesi) of real !ore di lavoro disponibili nel periodo t perturbate
+    CV: array(macchinari) of integer !cadenza media di produzione perturbata
+    Ptracking: array(macchinari,mesi) of array(1..2) of integer !serve a riordinare la matrice xit in ordine crescente di macchinari e mesi
+    
+    !ARRAY PER RIMUOVERE LA PERTURBAZIONE
+    xup : array(macchinari,mesi) of integer
+    
+    !FUNZIONE OBIETTIVO E ARRAY DEL EURISTICOCasuale
+    xms : array(macchinari,mesi) of integer!array per euristicocasuale
+    zms : integer!funzione obiettivo euristicocasuale
+    
+    !FUNZIONE OBIETTIVO E ARRAY PER LOCAL SEARCH
+    xls : array(macchinari,mesi) of integer !array per local search
+    zls : integer !funzione obiettivo local search
+    scostamento : integer !scostamento dal forecast
+  end-declarations
+
+  forward procedure Perturbazione(Pxls : array(macchinari,mesi) of integer, Pko : array(macchinari) of integer, Pfor : array(macchinari) of integer, PV : array(macchinari) of integer, Pwit : array(macchinari, mesi) of real, Pwt : array(mesi) of real)
+  forward procedure UndoPerturbazione(UPog : array(macchinari,mesi) of array(1..2) of integer, Pert : array(macchinari,mesi) of integer)
+  forward procedure LocalSearch(LSko : array(macchinari) of integer, LSfor : array(macchinari) of integer, LSV : array(macchinari) of integer, LSwit : array(macchinari, mesi) of real, LSwt : array(mesi) of real, msar : array(macchinari,mesi) of integer) !local search media
+  forward procedure EuristicoCasuale(Mko : array(macchinari) of integer, Mfor : array(macchinari) of integer, MV : array(macchinari) of integer, Mwit : array(macchinari, mesi) of real, Mwt : array(mesi) of real)!EuristicoCasuale
+  forward procedure Print(nome: string, z: integer, x: array(macchinari,mesi) of integer) !stampa soluzioni euristico
+
+  !MAIN
+  InputDati
+  
+  IteratedLocalSearch
+  
+  !END MAIN
+  procedure InputDati
+    initializations from inputfile
+      forecast
+      kore
+      V
+      A
+      R
+      Rn
+      Giorni
+    end-initializations
+    forall(i in macchinari, t in mesi) witmax(i,t):=Giorni(t) * Rn(i) * 8
+    forall(t in mesi) wtmax(t):= Giorni(t) * R * 8
+  end-procedure
+  
+  procedure IteratedLocalSearch
+    declarations
+      iterazione : integer!contatore di quante interazioni abbiamo fatto
+      maxiter : integer!numero di iterazioni per cui ripetere la perturbazione/ricerca
+      zilsbest : integer!ottimo locale
+      xilsbest : array(macchinari,mesi) of integer!matrice dell'ottimo locale
+      scartobest : integer
+      restart : integer!contatore per accettazione con restart
+      lastimps : integer!ultimo miglioramento
+      lastimpz : integer
+      zglobal : integer!ottimo tra tutte le zone esplorate
+      xglobal : array(macchinari,mesi) of integer!matrice dell'ottimo "globale"
+      scartoglobal : integer
+    end-declarations
+    
+    lastimps := MAX_INT
+    lastimpz := MAX_INT
+    iterazione := 1
+    maxiter := 250
+    restart := 1
+
+    !GENERIAMO UNA SOLUZIONE INIZIALE E FACCIAMO RICERCA LOCALE
+    EuristicoCasuale(kore,forecast,V,witmax,wtmax)
+    LocalSearch(kore,forecast,V,witmax,wtmax,xms)
+    xup := xls
+    scartobest := MAX_INT
+    scartoglobal := MAX_INT
+    zilsbest := zls
+    zglobal := zls
+    !INIZIAMO CON L'ILS
+    while(iterazione < maxiter) do
+      if(restart < 15) then
+        !PERTURBIAMO,FACCIAMO RICERCA LOCALE E TOGLIAMO LA PERTURBAZIONE
+        Perturbazione(xup,kore,forecast,V,witmax,wtmax)
+        LocalSearch(Ckore,Cforecast,CV,Cwitmax,Cwtmax,xls)
+        UndoPerturbazione(Ptracking,xls)
+        if(scostamento = lastimps and zls >= lastimpz) then!SE LA Z è UGUALE ALL'ULTIMO MIGLIORAMENTO IL CONTATORE DI RESTART AUMENTA
+          restart := restart + 1
+        elif(scostamento = lastimps and zls < lastimpz) then
+          zilsbest := zls
+          xilsbest := xup
+          lastimpz := zls
+          restart := 1
+        elif(scostamento < lastimps) then !SE è MINORE AGGIORNIAMO XILSBEST,ZILSBEST,LASTIMP E RESTART TORNA A ZERO
+          zilsbest := zls
+          xilsbest := xup
+          scartobest := scostamento
+          lastimps := scostamento
+          restart := 1
+        else!SE è PEGGIORE AUMENTIAMO IL CONTATORE DI RESTART DI 2 (PENALIZZIAMO PEGGIORAMENTI)
+          restart := restart + 1
+        end-if
+      else
+        if(scartobest < scartoglobal) then!QUANDO RIPARTIAMO INNANZITUTTO VEDIAMO SE BISOGNA AGGIORNARE I BEST "GLOBALI"
+          zglobal := zilsbest
+          xglobal := xilsbest
+          scartoglobal := scartobest
+        elif(scartobest = scartoglobal and zilsbest < zglobal) then
+          zglobal := zilsbest
+          xglobal := xilsbest
+          scartoglobal := scartobest
+        end-if
+        restart := 1
+        !GENERIAMO UNA NUOVA SOLUZIONE CASUALE, FACCIAMO LOCAL SEARCH E TORNIAMO NELL'IF IN ALTO
+        EuristicoCasuale(kore,forecast,V,witmax,wtmax)
+        LocalSearch(kore,forecast,V,witmax,wtmax,xms)
+        xup := xls
+        zilsbest := MAX_INT
+        scartobest := MAX_INT
+        lastimps := MAX_INT
+        lastimpz := MAX_INT
+      end-if
+      iterazione := iterazione + 1
+    end-do
+    
+    if(scartobest < scartoglobal) then!AGGIORNIAMO IL BEST GLOBAL NEL CASO IN CUI NON SIAMO ENTRATI NEL RESTART
+      zglobal := zilsbest
+      xglobal := xilsbest
+      scartoglobal := scartobest
+    elif(scartobest = scartoglobal and zilsbest < zglobal) then
+      zglobal := zilsbest
+      xglobal := xilsbest
+      scartoglobal := scartobest
+    end-if
+
+    t2:=gettime
+    Print("ILS", zglobal, xglobal)
+  end-procedure
+  
+  procedure EuristicoCasuale(Mko : array(macchinari) of integer, Mfor : array(macchinari) of integer, MV : array(macchinari) of integer, Mwit : array(macchinari, mesi) of real, Mwt : array(mesi) of real)
+    
+    declarations
+      candidatoxms : integer !numero generato casualmente, che bisogna vedere se può essere inserito nella matrice
+      indice : integer !numero generato casualmente nel ciclo di riempimento
+      usedindex : array(mesi) of integer !array per uscire dal ciclo di riempimento
+    end-declarations
+  
+    forall(i in macchinari)
+      forall(j in mesi) 
+        xms(i,j) := 0
+    !ciclo di riempimento matrice in cui ad ogni cella (i,t) viene assegnato un valore compreso tra 0 e il massimo numero di macchine che può contenere (rispettando i vincoli di ore)
+    forall(i in macchinari)
+      forall(j in mesi) do
+        xms(i,j) := floor( random*(minlist( ( Mwit(i,j)/((1+A)*Mko(i)) ), ( Mwt(j)-(sum(p in macchinari) (1+A)*Mko(p)*xms(p,j)) ) / Mko(i) ) ) )
+      end-do
+    !fine creazione iniziale matrice casuale
+    
+    !ciclo di riempimento casuale della matrice iniziale per avvicinarsi al forecast
+    forall(i in macchinari) do 
+      forall(t in mesi) do
+        usedindex(t) := 0
+      end-do
+      !finchè il forecast non è rispettato o nell'array di interruzione del ciclo ci sono meno di T/2 oggetti
+      while(sum(t in mesi) xms(i,t) < Mfor(i) and sum(t in mesi) usedindex(t) <= T/2) do
+        indice := ceil(random * T) 
+        !se nella cella casuale considerata possiamo aggiungere un'unità senza infrangere witmax e wtmax allora aggiungiamo l'unità, se no l'indice viene "aggiunto" ad un array
+        if(((1+A)*Mko(i) + ((1+A)*Mko(i)*xms(i,indice))) <= Mwit(i,indice) and ((1+A)*Mko(i) + sum(p in macchinari) (1+A)*Mko(p)*xms(p,indice)) <= Mwt(indice)) then
+          xms(i,indice) := xms(i,indice) + 1
+        else
+          usedindex(indice) := 1
+        end-if
+      end-do
+    end-do
+    !fine ciclo di riempimento  matrice xij
+    
+    !calcolo funzione obiettivo
+    zms := 0
+    forall(m in macchinari) do
+      scostamento := scostamento + abs(Mfor(m) - sum(t in mesi) xms(m,t))
+      forall(t in mesi) do
+        zms := zms + abs(MV(m) - xms(m,t))
+      end-do
+    end-do
+  end-procedure
+  
+  procedure LocalSearch(LSko : array(macchinari) of integer, LSfor : array(macchinari) of integer, LSV : array(macchinari) of integer, LSwit : array(macchinari, mesi) of real, LSwt : array(mesi) of real, msar : array(macchinari,mesi) of integer)
+  !L'idea è prendere una coppia di mesi, fare la media e mettere metà delle macchine nel primo e
+  !l'altra metà nel secondo. (ripetere per ogni riga, per tutte le coppie di mesi possibili)
+    declarations
+      suppmedia : real !media dei due oggetti considerati
+      itmesi : integer !tiene fermo l'indice del mese considerato per la media
+      ei,ej : integer !indici per togliere/aggiungere unità nei mesi con scostamento più alto dalla cadenza media
+      eccesso, eccessoworst : integer !scostamento dalla cadenza media
+      zlsbest : integer !incumbent
+      xlsbest : array(macchinari,mesi) of integer!array xit dell'incumbent
+      scarto : array(macchinari) of integer!array che tiene conto degli scostamenti dal forecast per ogni macchina
+      usedindex : array(mesi) of integer!array per uscire dal ciclo di riempimento
+      indice : integer!indice casuale per il riempimento
+      scostamentobest : integer
+    end-declarations
+    
+    zlsbest := MAX_INT
+    scostamentobest := MAX_INT
+    xls := msar
+    forall(i in macchinari) do
+      itmesi := 1
+      while(itmesi <= T) do
+        !tenendo fisso itmesi andiamo a fare la media tra lui e ogni altro numero sulla riga considerata
+        forall(j in mesi) do
+          suppmedia := (xls(i, itmesi) + xls(i, j))/2
+          !CONTROLLO SUI VALORI DA INSERIRE NELLA CASELLA "FISSATA"
+          if((1+A)*LSko(i)*ceil(suppmedia) <= LSwit(i,itmesi)) then
+            xls(i, itmesi) := ceil(suppmedia)
+          end-if
+          !CONTROLLO SUI VALORI ISERITI NELL'ALTRA CELLA CONSIDERATA
+          if((1+A)*LSko(i)*floor(suppmedia) <= LSwit(i,j)) then
+            xls(i, j) := floor(suppmedia)
+          end-if
+        end-do
+        !FINITO DI FARE LE MEDIE ED INSERIMENTI SULLA RIGA FACCIAMO UN RIEMPIMENTO CASUALE COME NEL EURISTICOCasuale, MA TOTALE(FINCHE IL FORECAST è RISPETTATO O L'ARRAY DEGLI INDICI USATI è PIENO)
+        forall(m in macchinari) do
+          forall(t in mesi) do
+            usedindex(t) := 0
+          end-do
+          while(sum(t in mesi) xls(m,t) < LSfor(m) and sum(t in mesi) usedindex(t) <> T) do
+            indice := ceil(random * T)
+            if(((1+A)*LSko(m) + ((1+A)*LSko(m)*xls(m,indice))) <= LSwit(m,indice) and ((1+A)*LSko(m) + sum(p in macchinari) (1+A)*LSko(p)*xls(p,indice)) <= LSwt(indice)) then
+              xls(m,indice) := xls(m,indice) + 1
+            else
+              usedindex(indice) := 1
+            end-if
+          end-do
+        end-do
+        !FINE CICLO DI RIEMPIMENTO
+        
+        !CICLO PER RIMUOVERE EVENTUALI INFRAZIONI DEL VINCOLO SU WTMAX
+        forall(j in mesi) do
+          while((sum(m in macchinari) (1+A)*LSko(m)*xls(m,j) > LSwt(j))) do
+            eccessoworst := 0
+            !CERCHIAMO QUALE CASELLA DELLA COLONNA CONSIDERATA HA IL PEGGIOR SCOSTAMENTO 
+            forall(r in macchinari) do
+              if(xls(r,j) > 0) then
+                eccesso := abs(xls(r,j) - LSV(r))
+                if(eccesso >= eccessoworst) then
+                  ei := r
+                  ej := j
+                  eccessoworst := eccesso
+                end-if
+              end-if
+            end-do
+            !RIMUOVIAMO UN ELEMENTO DALLA CASELLA CON SCOSTAMENTO PEGGIORE
+            xls(ei,ej) := xls(ei,ej) - 1
+          end-do
+        end-do
+        
+        zls := 0
+        scostamento := 0
+        !CALCOLIAMO LA FUNZIONE OBIETTIVO E CONFRONTIAMO CON L'INCUMBENT
+        forall(m in macchinari) do
+          scostamento := scostamento + abs(LSfor(m) - sum(t in mesi) xls(m,t))
+          forall(t in mesi)
+            zls := zls + abs(LSV(m) - xls(m,t))
+        end-do
+        if(scostamento < scostamentobest) then
+          zlsbest := zls
+          xlsbest := xls
+          scostamentobest := scostamento
+          itmesi := 1
+        elif(scostamento = scostamentobest and zls < zlsbest) then
+          zlsbest := zls
+          xlsbest := xls
+          itmesi := 1
+        end-if
+        itmesi := itmesi + 1
+      end-do
+    end-do
+    !UGUAGLIANZA COSI VENGONO AGGIORNATI ANCHE FUORI
+    zls := zlsbest
+    xls := xlsbest
+    scostamento := scostamentobest
+  end-procedure
+
+  procedure Perturbazione(Pxls : array(macchinari,mesi) of integer, Pko : array(macchinari) of integer, Pfor : array(macchinari) of integer, PV : array(macchinari) of integer, Pwit : array(macchinari, mesi) of real, Pwt : array(mesi) of real)
+    !PRENDE IN INPUT ARRAY E MATRICI ORDINATE (INDICI IN ORDINE CRESCENTE IN QUESTO CASO) E LI SCOMBINA
+    declarations
+      xpmes : array(mesi) of integer!nuovo ordine dei mesi
+      xpmac : array(macchinari) of integer!nuovo ordine dei macchinari
+      suppmesi : array(mesi) of integer!serve a tenere traccia di quali mesi ho gia aggiunto a xpmes
+      suppmacc : array(macchinari) of integer!serve a tenere traccia di quali macchinari ho aggiunto a xpmac
+      added : boolean!serve ad uscire dal ciclo di generazione degli array con i nuovi ordinamenti
+      newindex : integer!nuovo indice generato casualmente
+      suppxls : array(macchinari,mesi) of integer!matrice di supporto per non scombinare la matrice che sto scombinando
+    end-declarations
+    
+    suppxls := Pxls
+    
+    !SCOMBINA L'ORDINE DEI MACCHINARI
+    forall(i in macchinari) do
+      added := false
+      !FINCHè NON AGGIUNGO UN NUMERO NE GENERO UNO CASUALE TRA 1 E LA CARDINALITà DELL'ARRAY
+      while(added = false) do
+        newindex := ceil(random*n)
+        !SE IL NUMERO CHE HO GENERATO NON è ANCORA STATO AGGIUNTO
+        if(suppmacc(newindex) = 0) then
+          xpmac(i) := newindex!LO AGGIUNGO
+          suppmacc(newindex) := 1!IL VALORE IN POSIZIONE DEL NUMERO GENERATO NELL'ARRAY DI SUPPORTO DIVENTA 1
+          added := true
+        end-if
+      end-do
+    end-do
+    
+    !SCOMBINA L'ORDINE DEI MESI
+    forall(i in mesi) do
+      added := false
+      !FINCHè NON AGGIUNGO UN NUMERO NE GENERO UNO CASUALE TRA 1 E LA CARDINALITà DELL'ARRAY
+      while(added = false) do
+        newindex := ceil(random*T)
+        !SE IL NUMERO CHE HO GENERATO NON è ANCORA STATO AGGIUNTO
+        if(suppmesi(newindex) = 0) then
+          xpmes(i) := newindex!LO AGGIUNGO
+          suppmesi(newindex) := 1 !IL VALORE IN POSIZIONE DEL NUMERO GENERATO NELL'ARRAY DI SUPPORTO DIVENTA 1
+          added := true
+        end-if
+      end-do
+    end-do
+    
+    !SCOMBINO GLI ARRAY/MATRICI IN BASE AI NUOVI ORDINAMENTI
+    forall(i in macchinari) do
+      Ckore(i) := Pko(xpmac(i))
+      CV(i) := PV(xpmac(i))
+      Cforecast(i) := Pfor(xpmac(i))
+      forall(j in mesi) do
+        Cwtmax(j) := Pwt(xpmes(j))
+        Cwitmax(i,j) := Pwit(xpmac(i),xpmes(j))
+        xls(i,j) := suppxls(xpmac(i),xpmes(j))
+        Ptracking(i,j,1) := xpmac(i)
+        Ptracking(i,j,2) := xpmes(j)
+      end-do
+    end-do
+
+  end-procedure
+  
+  procedure UndoPerturbazione(UPog : array(macchinari,mesi) of array(1..2) of integer, Pert : array(macchinari,mesi) of integer)
+    !SI PRENDE IN INPUT LA MATRICE CHE TIENE TRACCIA DI COME SONO STATE SCOMBINATE LE COSE, LA MATRICE Xit SCOMBINATA E RESTITUISCE LA MATRICE Xit ORDINATA IN ORDINE CRESCENTE DI MACCHINARI E MESI
+    forall(i in macchinari) do
+      forall(j in mesi) do
+        xup(UPog(i,j,1),UPog(i,j,2)) := Pert(i,j)
+      end-do
+    end-do
+  end-procedure
+  
+  procedure Print(nome: string, z: integer, x: array(macchinari,mesi) of integer)
+    writeln
+    writeln("Risultati ", nome, ":")
+    writeln("\tZ = ", z, " - ", sum(i in macchinari) (forecast(i) - sum(t in mesi) x(i,t))) !stampa la z e lo scostamento dal forecast totale
+    writeln("\tTempo di esecuzione= ", t2-t1)
+    !stampa x
+    writeln
+    writeln("X")
+    write("\t")
+    forall(t in mesi)  write("\t(",t,")")
+    writeln
+    forall(i in macchinari) do
+      write("(",i," - ", forecast(i) - sum(t in mesi) x(i,t),") ") !per ogni macchina indica anche lo scostamento dal forecast
+      forall(t in mesi) write("\t ",x(i,t)) !stampa matrice di soluzioni x
+      writeln
+    end-do
+    !stampa ore rimanenti
+    writeln
+    writeln("Ore")
+    write("\t")
+    forall(t in mesi)  write("\t(",t,")")
+    writeln
+    forall(i in macchinari) do
+      write("(",i," - ",kore(i),") ") !per ogni macchina indica anche il tempo di ciclo
+      forall(t in mesi) do
+        write("\t",witmax(i,t) - x(i,t)*(1+A)*kore(i)) !stampa la matrice di ore macchina rimanenti
+      end-do
+      writeln
+    end-do
+    write("\t")
+    forall(t in mesi) write("\t",wtmax(t) - sum(i in macchinari) x(i,t)*(1+A)*kore(i)) !stampa le ore macchina rimanenti per mese
+    writeln
+  end-procedure
+end-model

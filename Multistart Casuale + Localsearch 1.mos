@@ -1,0 +1,363 @@
+model ModelName
+  options noimplicit
+  uses "mmxprs", "mmsystem"
+
+  forward procedure InputDati !input tesina
+  forward procedure MultiStart !algoritmo multi start
+
+  declarations
+    n: integer
+    T: integer
+    inputfile = "Instances/Dati-40C.dat"
+    solution_status: string
+    eps = 0.001
+    t1, t2: real
+  end-declarations
+
+  initialisations from inputfile
+    n
+    T
+  end-initialisations
+
+  declarations
+    macchinari = 1..n ! range delle macchine utilizzabili
+    mesi = 1..T ! range dei mesi
+    forecast: array(macchinari) of integer ! Forecast commerciale per il tipo i (domanda)
+    kore: array(macchinari) of integer ! ore necessarie per realizzare il tipo i (tempo ciclo)
+    witmax: array(macchinari, mesi) of real ! ore di lavoro disponibili nel periodo t per produrre macchine di tipo i
+    wtmax: array(mesi) of real ! ore di lavoro disponibili nel periodo t
+    V: array(macchinari) of integer ! cadenza media di produzione mensile per il prodotto imports
+    A: real ! costante legata all’assenteismo medio (6%)
+    R: integer !risorse
+    Rn: array(macchinari) of integer !risorse per macchinario
+    Giorni: array(mesi) of integer !giorni lavorativi per mese
+
+    !ARRAY E MATRICI CHE TENGONO TRACCIA DELLE PERTURBAZIONI
+    xpmac: array(macchinari) of integer !nuovo ordine dei macchinari
+    xpmes: array(mesi) of integer !nuovo ordine dei mesi
+    Cforecast: array(macchinari) of integer !forecast commerciale per ciascun tipo di macchinario perturbato
+    Ckore: array(macchinari) of integer !ore necessarie per realizzare ciascun tipo di macchinario perturbate
+    Cwitmax: array(macchinari, mesi) of real !ore di lavoro disponibili in ogni periodo per produrre macchinari di un certo tipo perturbate
+    Cwtmax: array(mesi) of real !ore di lavoro disponibili in ogni periodo per produrre macchinari perturbate
+    CV: array(macchinari) of integer !cadenza media di produzione mensile per ciascun tipo di macchinario perturbata
+
+    !SOLUZIONE DELL'EURISTICO RANDOM E VALORE DELLA SOLUZIONE
+    xms: array(macchinari,mesi) of integer !soluzione euristico random
+    zms: integer !valore soluzione euristico random
+    scartoForecast: integer !array che tiene conto della differenza tra forecast richiesto e quantità inserite nella soluzione
+
+    !ARRAY PER RESTITUIRE LA SOLUZIONE RIORDINATA
+    xup: array(macchinari,mesi) of integer !soluzione riordinata secondo l'ordine originale dei macchinari/ mesi
+
+    feasible: boolean !variabile booleana che assume valore true quando la specifica soluzione è ammissibile (NECESSARIA PER LOCAL SEARCH)
+  end-declarations
+
+  forward procedure Perturbazione(Pko: array(macchinari) of integer, Pfor: array(macchinari) of integer, PV: array(macchinari) of integer, Pwit: array(macchinari, mesi) of real, Pwt: array(mesi) of real) !procedura che modifica l'ordine di macchinari/ mesi e conseguentemente i dati relativi (kore,forecast,V,witmax,wtmax)
+  forward procedure UndoPerturbazione(Pert: array(macchinari,mesi) of integer) !procedura per riordinare la soluzione euristica secondo l'ordine originale di macchinari e mesi
+  forward procedure EuristicoRandom(Mko: array(macchinari) of integer, Mfor: array(macchinari) of integer, MV: array(macchinari) of integer, Mwit: array(macchinari, mesi) of real, Mwt: array(mesi) of real) !algoritmo euristico random
+  forward procedure Print(nome: string, z: integer, x: array(macchinari,mesi) of integer) !stampa soluzioni euristico
+  forward procedure CheckFeasibility (solution: array(macchinari, mesi) of integer) !imposta il valore della variabile globale "feasible" a seconda dell'ammissibilità della soluzione data in input (NECESSARIA PER LOCAL SEARCH)
+  forward procedure AlgoritmoLocalSearch (xPartenza: array(macchinari, mesi) of integer, zPartenza: integer) !algoritmo LocalSearch
+
+  !MAIN
+  InputDati
+
+  MultiStart !algoritmo multi start
+
+  !END MAIN
+  procedure AlgoritmoLocalSearch (xPartenza: array(macchinari, mesi) of integer, zPartenza: integer) !algoritmo Local Search
+    t1:= gettime !tempo iniziale esecuzione Local Search
+    declarations
+      xIntorno: array(macchinari, mesi) of integer !soluzione trovata nell'intorno della soluzione di partenza
+      zIntorno: integer !valore della soluzione trovata nell'intorno della soluzione di partenza
+      fIntorno: integer !scarto totale dal forecast della soluzione trovata nell'intorno della soluzione di partenza
+      fPartenza: integer !scarto totale dal forecast della soluzione di partenza
+      riga: integer !riga della soluzione di partenza scelta dalla Local Search
+      col1: integer !colonna della soluzione di partenza scelta dalla Local Search
+      col2: integer !colonna della soluzione di partenza scelta dalla Local Search
+      iterazioniLS: integer !massimo numero di iterazioni della Local Search senza miglioramenti
+      contatore1: integer !contatore iterazioni eseguite senza miglioramenti
+      contatore2: integer !contatore usato per terminare l'esecuzione nel caso in cui non si trovassero soluzioni nell'intorno
+    end-declarations
+
+    !inizializzazione variabili
+    iterazioniLS := zPartenza*10 !massimo numero di iterazioni senza miglioramenti
+    forall(m in macchinari) 
+      fPartenza := fPartenza + forecast(m) - sum(k in mesi) xPartenza(m,k) !scarto totale dal forecast della soluzione di partenza
+
+    !esecuzione algoritmo
+    while(contatore1 < iterazioniLS) do
+
+      xIntorno := xPartenza !riparto sempre dal punto della regione ammissibile in cui mi trovo
+      zIntorno := 0
+      fIntorno := 0
+      riga := ceil(random*n) !seleziono un indice di riga random
+      col1 := ceil(random*T) !seleziono un indice di colonna random
+      col2 := ceil(random*T) !seleziono un indice di colonna random
+      while(col1 = col2) col2 := ceil(random*T) !se sono state selezionate due colonne identiche, una si cambia finchè non diventano diverse
+
+      if( sum(k in macchinari) (xIntorno(k,col1)*kore(k)*(1+A)) <= (wtmax(col1))-(kore(riga)*(1+A)) and (xIntorno(riga,col1)*kore(riga)*(1+A)) <= (witmax(riga,col1)-kore(riga)*(1+A)) and xIntorno(riga,col2)>0 )then !se è possibile aggiungere una macchina nella cella xIntorno(riga,col1), si aggiunge
+        !writeln("soluzione di partenza ",fPartenza, "  ",zPartenza)
+        xIntorno(riga,col1) += 1
+        xIntorno(riga,col2) -= 1 !si sottrae una macchina nella cella xIntorno(riga,col2) poichè ne è stata aggiunta una nell'altra cella
+        CheckFeasibility(xIntorno) !controllo dell'ammissibilità della soluzione xIntorno
+        if feasible = false then !se la soluzione xIntorno non è feasible allora si prova a migliorare le righe che non rispettano la forecast
+          forall( i in macchinari | sum(k in mesi) xIntorno(i,k) < forecast(i) ) do
+            forall( f in mesi | sum(l in macchinari) (xIntorno(l,f)*kore(l)*(1+A)) <= (wtmax(f)-(kore(i)*(1+A)) ) and !data la riga i con forecast non rispettata, si controlla per ogni mese se è possibile aggiungere una macchina senza violare i vincoli
+              (xIntorno(i,f)*kore(i)*(1+A)) <= (witmax(i,f)-kore(i)*(1+A)) and
+              (sum(g in mesi) xIntorno(i,g) <> forecast(i)) ) do
+              xIntorno(i,f) += 1 !si aggiunge una macchina senza violare i vincoli di ore e di forecast
+            end-do
+          end-do
+        end-if
+
+        forall(i in macchinari, t in mesi) !si calcola il valore della soluzione trovata nell'intorno
+          zIntorno := zIntorno + abs(V(i) - xIntorno(i,t))
+        forall(m in macchinari) 
+          fIntorno := fIntorno + forecast(m) - sum(k in mesi) xIntorno(m,k)
+
+        if fIntorno < fPartenza or zIntorno <= zPartenza then !se la soluzione ottenuta nell'intorno ha un minor scarto totale dal forecast rispetto alla soluzione di partenza, ci si sposta(first improvement)
+          !altrimenti, dato che la soluzione ottenuta nell'intorno non può avere scarto totale dal forecast peggiore rispetto alla soluzione di partenza, ci si sposta se e solo se lo scarto totale dalla cadenza è migliore/equivalente
+          if fIntorno = fPartenza and zIntorno = zPartenza then !se gli scarti totali dal forecast e dalla cadenza sono rimasti invariati, allora non si è ottenuto un miglioramento (però lo spostamento è avvenuto comunque perchè qualcosa nella soluzione è cambiato)
+            contatore1 := contatore1 + 1
+          end-if
+          xPartenza := xIntorno !aggiorno la soluzione di partenza
+          zPartenza := zIntorno !aggiorno il valore della soluzione di partenza
+          fPartenza := fIntorno !aggiorno lo scarto totale dal forecast della soluzione di partenza
+        else !se lo scarto totale dal forecast è rimasto invariato ma lo scarto totale dalla cadenza è peggiorato allora non ci si sposta e si incrementa contatore1 perchè non si sono ottenuti miglioramenti
+          contatore1 := contatore1 + 1 
+        end-if
+      end-if
+      contatore2 := contatore2 + 1
+      if contatore2 = n*n*T then !se sono state eseguite troppe iterazioni ci si ferma perchè potrebbe essere che non si riesca a trovare una soluzione nell'intorno
+        break
+      end-if
+
+    end-do !fine iterazioni Local Search
+    t2 := gettime !tempo finale esecuzione Local Search
+
+    !scrittura output a schermo
+    Print("Algoritmo Local Search ", zPartenza, xPartenza)
+  end-procedure
+
+  procedure MultiStart !algoritmo multi start
+    declarations
+      iter: integer !iterazione algoritmo multi start
+      max_iter: integer !numero massimo di iterazioni algoritmo multi start
+      scartoForecastbest: integer !scarto totale dal forecast dell'incumbent solution
+      zmsbest: integer !valore incumbent solution (scarto totale dalla cadenza)
+      xmsbest: array(macchinari, mesi) of integer !incumbent solution
+    end-declarations
+    t1:=gettime
+    !inizializzazione variabilI
+    iter := 0
+    max_iter := 100
+    scartoForecastbest := MAX_INT
+    zmsbest := MAX_INT
+    forall(i in macchinari, t in mesi) xmsbest(i,t) := 0
+
+    !esecuzione algoritmo
+    while(iter < max_iter) do
+      Perturbazione(kore,forecast,V,witmax,wtmax) !perturbazione dell'ordinamento dei macchinari, dei mesi e dei dati relativi (kore,forecast,V,witmax,wtmax)
+      EuristicoRandom(Ckore,Cforecast,CV,Cwitmax,Cwtmax) !creazione di una soluzione in modo casuale, a partire dagli array disordinati (Ckore,Cforecast,CV,Cwitmax,Cwtmax)
+      !se la soluzione euristica ha un minor scarto totale dal forecast rispetto allo scarto dell'incumbent solution, allora quella soluzione diventa l'incumbent solution.
+      !se lo scarto dal forecast è il medesimo, ma lo scarto totale dalla cadenza è inferiore, allora quella soluzione diventa l'incumbent solution.
+      if(scartoForecastbest > scartoForecast or (scartoForecastbest = scartoForecast and zmsbest > zms)) then
+        scartoForecastbest := scartoForecast !aggiornamento del valore scartoForecastbest
+        zmsbest := zms !aggiornamento del valore zmsbest
+        UndoPerturbazione(xms) !riordinamento della soluzione euristica secondo gli ordinamenti originali (macchinari e mesi in ordine crescente)
+        xmsbest := xup !l'incumbent solution è la soluzione riordinata
+      end-if
+      iter := iter + 1 !aggiornamento numero di iterazioni eseguite
+    end-do
+    t2:=gettime
+    Print("MultiStart", zmsbest, xmsbest)
+    AlgoritmoLocalSearch(xmsbest, zmsbest)
+  end-procedure
+
+  procedure CheckFeasibility (solution: array(macchinari, mesi) of integer) !imposta il valore della variabile globale "feasible" a seconda dell'ammissibilità della soluzione data in input
+    declarations
+      contatoreFeasibility: integer !contatore usato per stabilire se tutte le righe di una data soluzione hanno raggiunto la forecast richiesta
+    end-declarations
+
+    !inizializzazione variabili
+    contatoreFeasibility := 0
+
+    !esecuzione algoritmo
+    forall(i in macchinari)
+      if sum(t in mesi) solution(i,t) = forecast(i) then
+        contatoreFeasibility += 1
+      end-if
+    if contatoreFeasibility = n then
+      feasible := true !se feasible, allora tutte le forecast sono state soddisfatte (rispettando i vincoli di ore)
+    end-if
+  end-procedure
+
+  procedure EuristicoRandom(Mko: array(macchinari) of integer, Mfor: array(macchinari) of integer, MV: array(macchinari) of integer, Mwit: array(macchinari, mesi) of real, Mwt: array(mesi) of real) !euristico random
+    declarations
+      indice: integer !numero generato casualmente nel ciclo per ridurre lo scostamento dal forecast richiesto
+      usedindex: array(mesi) of integer !array per uscire dal ciclo di riempimento
+    end-declarations
+
+    !inizializzazione soluzione euristica
+    forall(i in macchinari)
+      forall(j in mesi)
+        xms(i,j) := 0
+    !ciclo di riempimento matrice in cui ad ogni cella (i,j) viene assegnato un valore compreso tra 0 e il massimo numero di macchine che può contenere (rispettando i vincoli di ore)
+    forall(i in macchinari)
+      forall(j in mesi) do
+        xms(i,j) := floor( random*(minlist( ( Mwit(i,j)/((1+A)*Mko(i)) ), ( Mwt(j)-(sum(p in macchinari) (1+A)*Mko(p)*xms(p,j)) ) / Mko(i) ) ) )
+      end-do
+    !fine creazione matrice casuale iniziale
+
+    !ciclo per ridurre lo scostamento dal forecast richiesto
+    forall(i in macchinari) do
+      !finchè la produzione eccede il forecast richiesto, si seleziona in modo casuale una cella nella riga i e si rimuove un'unità
+      while(sum(t in mesi) xms(i,t) > Mfor(i)) do
+        indice := ceil(random * T)
+        if(xms(i,indice) > 0) then
+          xms(i,indice) := xms(i,indice) - 1
+        end-if
+      end-do
+      if(sum(t in mesi) xms(i,t) < Mfor(i)) then
+        !riempimento casuale delle righe con produzione non sufficiente (per avvicinarsi al forecast richiesto)
+        forall(t in mesi) do
+          usedindex(t) := 0
+        end-do
+        !finchè il forecast non è rispettato o nell'array di interruzione del ciclo ci sono meno di T unità
+        while(sum(t in mesi) xms(i,t) < Mfor(i) and sum(t in mesi) usedindex(t) < T) do
+          indice := ceil(random * T)
+          !se nella cella casuale considerata è possibile aggiungere un'unità senza infrangere witmax e wtmax allora si aggiunge l'unità, altrimenti viene assegnato valore 1 all'array usedindex in posizione 'indice'
+          if(((1+A)*Mko(i) + ((1+A)*Mko(i)*xms(i,indice))) <= Mwit(i,indice) and ((1+A)*Mko(i) + sum(p in macchinari) (1+A)*Mko(p)*xms(p,indice)) <= Mwt(indice) ) then
+            xms(i,indice) := xms(i,indice) + 1
+          else
+            usedindex(indice) := 1
+          end-if
+        end-do
+      end-if
+    end-do
+    !fine ciclo di riempimento matrice xms (soluzione euristica random)
+
+    !calcolo funzione obiettivo
+    zms := 0
+    scartoForecast := 0
+    forall(m in macchinari) do
+      scartoForecast := scartoForecast + Mfor(m) - sum(k in mesi) xms(m,k)
+      forall(t in mesi) do
+        zms := zms + abs(MV(m) - xms(m,t))
+      end-do
+    end-do
+
+  end-procedure
+
+  procedure Perturbazione(Pko: array(macchinari) of integer, Pfor: array(macchinari) of integer, PV: array(macchinari) of integer, Pwit: array(macchinari, mesi) of real, Pwt: array(mesi) of real) !procedura che modifica in modo casuale l'ordine di macchinari/ mesi e conseguentemente modifica gli array kore/cadenza V/forecast/Wtmax/Witmax in base al nuovo ordinamento
+    declarations
+      used1: array(macchinari) of integer !memorizza i macchinari che ho già inserito nel nuovo ordinamento
+      pesi1: array(macchinari) of integer !memorizza pesi casuali assegnati ai macchinari
+      used2: array(mesi) of integer !memorizza i mesi che ho già inserito nel nuovo ordinamento
+      pesi2: array(mesi) of integer !memorizza pesi casuali assegnati ai mesi
+      massimo, jmax: integer !valore intero e indice, utili per eseguire gli ordinamenti
+    end-declarations
+
+    !modifica dell'ordine dei macchinari
+    forall(i in macchinari) pesi1(i) := ceil(random*n*T) !ad ogni macchinario è assegnato un peso casuale tra 0 e n*T
+    forall(i in macchinari) used1(i) := 0
+    forall(j in macchinari) do
+      massimo := -MAX_INT
+      forall(k in macchinari) do
+        if (used1(k) = 0 and pesi1(k) > massimo) then
+          massimo := pesi1(k)
+          jmax := k
+        end-if
+      end-do
+      xpmac(j) := jmax !indice del macchinario con peso più grande non ancora selezionato
+      used1(jmax) := 1 !non considero più quel macchinario nell'ordinamento
+    end-do
+
+    !modifica dell'ordine dei mesi
+    forall(i in mesi) pesi2(i) := ceil(random*n*T) !ad ogni mese è assegnato un peso casuale tra 0 e n*T
+    forall(i in mesi) used2(i) := 0
+    forall(j in mesi) do
+      massimo := -MAX_INT
+      forall(k in mesi) do
+        if (used2(k) = 0 and pesi2(k) > massimo) then
+          massimo := pesi2(k)
+          jmax := k
+        end-if
+      end-do
+      xpmes(j) := jmax !indice del mese con peso più grande non ancora selezionato
+      used2(jmax) := 1 !non considero più quel mese nell'ordinamento
+    end-do
+
+    !modifico gli altri array (kore, V, forecast, wtmax, witmax ) in base ai nuovi ordinamenti dei macchinari/ mesi
+    !Ckore, CV, Cforecast, Cwtmax, Cwitmax sono gli array modificati che andranno in input all'euristico random
+    forall(i in macchinari) do
+      Ckore(i) := Pko(xpmac(i))
+      CV(i) := PV(xpmac(i))
+      Cforecast(i) := Pfor(xpmac(i))
+      forall(j in mesi) do
+        Cwtmax(j) := Pwt(xpmes(j))
+        Cwitmax(i,j) := Pwit(xpmac(i),xpmes(j))
+      end-do
+    end-do
+
+  end-procedure
+
+  procedure UndoPerturbazione(Pert: array(macchinari, mesi) of integer) !procedura per riordinare la soluzione euristica secondo l'ordine originale di macchinari e mesi
+    !si prende in input la soluzione (che è stata costruita rispettando le modifiche degli array effettuate dalla perturbazione)
+    forall(i in macchinari) do
+      forall(j in mesi) do
+        xup(xpmac(i),xpmes(j)) := Pert(i,j)
+      end-do
+    end-do
+    !restituisce la matrice xup che è la soluzione con macchinari e mesi riordinati secondo l'ordine originale
+  end-procedure
+
+  procedure InputDati
+    initializations from inputfile
+      forecast
+      kore
+      V
+      A
+      R
+      Rn
+      Giorni
+    end-initializations
+    forall(i in macchinari, t in mesi) witmax(i,t):=Giorni(t) * Rn(i) * 8
+    forall(t in mesi) wtmax(t):= Giorni(t) * R * 8
+  end-procedure
+
+  procedure Print(nome: string, z: integer, x: array(macchinari,mesi) of integer)
+    writeln
+    writeln("Risultati ", nome, ":")
+    writeln("\tZ = ", z, " - ", sum(i in macchinari) (forecast(i) - sum(t in mesi) x(i,t))) !stampa la z e lo scostamento dal forecast totale
+    writeln("\tTempo di esecuzione= ", t2-t1)
+    !stampa x
+    writeln
+    writeln("X")
+    write("\t")
+    forall(t in mesi)  write("\t(",t,")")
+    writeln
+    forall(i in macchinari) do
+      write("(",i," - ", forecast(i) - sum(t in mesi) x(i,t),") ") !per ogni macchina indica anche lo scostamento dal forecast
+      forall(t in mesi) write("\t ",x(i,t)) !stampa matrice di soluzioni x
+      writeln
+    end-do
+    !stampa ore rimanenti
+    writeln
+    writeln("Ore")
+    write("\t")
+    forall(t in mesi)  write("\t(",t,")")
+    writeln
+    forall(i in macchinari) do
+      write("(",i," - ",kore(i),") ") !per ogni macchina indica anche il tempo di ciclo
+      forall(t in mesi) do
+        write("\t",witmax(i,t) - x(i,t)*(1+A)*kore(i)) !stampa la matrice di ore macchina rimanenti
+      end-do
+      writeln
+    end-do
+    write("\t")
+    forall(t in mesi) write("\t",wtmax(t) - sum(i in macchinari) x(i,t)*(1+A)*kore(i)) !stampa le ore macchina rimanenti per mese
+    writeln
+  end-procedure
+end-model

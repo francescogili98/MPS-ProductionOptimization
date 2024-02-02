@@ -1,0 +1,9 @@
+n:		6	!numero	di	macchinari
+T:		12	!numero	mesi	considerati
+R:		23 	!risorse
+A:		0.06	!costante	assenteismo	medio
+forecast:	[27	40	18	56	124	61]
+kore:		[100	125	190	119	100	100]
+V:		[2	4	2	6	13	6]
+Rn:		[2	4	3	5	8	4]	!risorse max per macchina - witmax = giorni*risorse macchina*8 se la machina e fosse 8 invece che 7 sarebbe feasible
+Giorni:		[16	19	23	20	22	19	21	8	22	21	21	16]	!giorni lavorativi per mese - wtmax = giorni*risorse*8

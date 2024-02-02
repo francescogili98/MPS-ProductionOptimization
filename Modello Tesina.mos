@@ -1,0 +1,112 @@
+model ModelName
+  options noimplicit
+  uses "mmxprs", "mmsystem"
+
+  forward procedure InputDati !input tesina
+  forward procedure TesinaModello !Modello matematico
+  forward procedure Print_Status !controllo soluzione modello
+
+  declarations
+    n: integer
+    T: integer
+    inputfile = "Instances/Dati.dat"
+    solution_status: string
+    eps = 0.001
+    t1, t2: real
+  end-declarations
+
+  initialisations from inputfile
+    n
+    T
+  end-initialisations
+
+  declarations
+    macchinari = 1..n ! range delle macchine utilizzabili
+    mesi = 1..T ! range dei mesi
+    forecast: array(macchinari) of integer ! Forecast commerciale per il tipo i (domanda)
+    kore: array(macchinari) of integer ! ore necessarie per realizzare il tipo i (tempo ciclo)
+    witmax: array(macchinari, mesi) of real ! ore di lavoro disponibili nel periodo t per produrre macchine di tipo i
+    wtmax: array(mesi) of real ! ore di lavoro disponibili nel periodo t
+    V: array(macchinari) of integer ! cadenza media di produzione mensile per il prodotto imports
+    A: real ! costante legata all’assenteismo medio (6%)
+    R: integer !risorse
+    Rn: array(macchinari) of integer !risorse per macchinario
+    Giorni: array(mesi) of integer !giorni lavorativi per mese
+  end-declarations
+
+  !MAIN
+  InputDati
+
+  setparam("XPRS_MAXTIME", 600)
+  TesinaModello
+
+  !END MAIN
+   procedure InputDati
+    initializations from inputfile
+      forecast
+      kore
+      V
+      A
+      R
+      Rn
+      Giorni
+    end-initializations
+    forall(i in macchinari, t in mesi) witmax(i,t):=Giorni(t) * Rn(i) * 8
+    forall(t in mesi) wtmax(t):= Giorni(t) * R * 8
+  end-procedure
+  
+  procedure TesinaModello
+    declarations
+      z: linctr ! funzione obiettivo da minimizzare
+      dipiu, dimeno: array(macchinari) of mpvar ! variabili di supporto che esprimono la distanza dalla cadenza media di produzione mensile per ogni prodotto i
+      x: array(macchinari, mesi) of mpvar ! quantità di macchine i previste nel periodo t
+      ditpiu, ditmeno: array(macchinari, mesi) of mpvar ! variabili di supporto che esprimono la distanza dalla cadenza media di produzione mensile per ogni prodotto i, per ogni periodo t
+    end-declarations
+
+    z:= sum(i in macchinari) (dipiu(i) + dimeno(i))! 1
+    forall(i in macchinari) sum(t in mesi) x(i,t) = forecast(i) ! 2
+    forall(i in macchinari, t in mesi) (1+A)*kore(i)*x(i,t) <= witmax(i,t) ! 3
+    forall(t in mesi) sum(i in macchinari) (1+A)*kore(i)*x(i,t) <= wtmax(t) ! 4
+    forall(i in macchinari, t in mesi) x(i,t)-ditpiu(i,t)+ditmeno(i,t) = V(i) ! 5
+    forall(i in macchinari) dipiu(i) = sum(t in mesi) ditpiu(i,t) ! 6
+    forall(i in macchinari) dimeno(i) = sum(t in mesi) ditmeno(i,t) ! 7
+    forall(i in macchinari, t in mesi) x(i,t) is_integer
+
+	  t1:=gettime
+    minimize(z)
+    t2:=gettime
+
+    writeln("Risultati Modello Tesina:")
+    Print_Status
+    writeln("\tZ= ", getobjval)
+    writeln("\tTempo di esecuzione= ", t2-t1)
+    !stampa x
+    writeln
+    writeln("X")
+    forall(t in mesi)  write("\t(",t,")")
+    writeln
+    forall(i in macchinari) do
+      write("(",i,")")
+      forall(t in mesi) do
+        if getsol(x(i,t)) < eps then
+          write("\t 0") !write("-0")
+        else
+          write("\t ",getsol(x(i,t))) !write("-",getsol(x(i,t)))
+        end-if
+      end-do
+      writeln
+    end-do
+  end-procedure
+
+  procedure Print_Status
+        case getprobstat of
+            XPRS_OPT: solution_status:="Optimum found"
+            XPRS_UNF: solution_status:="Unfinished"
+            XPRS_INF: solution_status:="Infeasible"
+            XPRS_UNB: solution_status:="Unbounded"
+            XPRS_OTH: solution_status:="Failed"
+            else solution_status:="???"
+        end-case
+        writeln("\tProblem status: ", solution_status)
+    end-procedure
+end-model
